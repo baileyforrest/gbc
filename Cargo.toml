@@ -1,0 +1,6 @@
+[package]
+name = "gbc"
+version = "0.1.0"
+authors = ["Bailey Forrest <baileycforrest@gmail.com>"]
+
+[dependencies]
