@@ -3,4 +3,12 @@ name = "gbc"
 version = "0.1.0"
 authors = ["Bailey Forrest <baileycforrest@gmail.com>"]
 
+[lib]
+name = "libgbc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "gbc"
+path = "src/bin.rs"
+
 [dependencies]
