@@ -467,14 +467,14 @@ impl Cpu {
                                         self.regs.de
                                     };
 
-                                    let write_op = (dst_addr, self.regs.get8(Reg8::A));
+                                    let write_op = (dst_addr, self.get_reg8(Reg8::A));
                                     self.mem_writes.push(write_op);
                                 }
                                 2 | 3 => {
                                     size = 1;
                                     cycles = 8;
 
-                                    let write_op = (self.regs.hl, self.regs.get8(Reg8::A));
+                                    let write_op = (self.regs.hl, self.get_reg8(Reg8::A));
                                     self.mem_writes.push(write_op);
 
                                     if p == 2 {
@@ -501,19 +501,20 @@ impl Cpu {
                                         self.regs.de
                                     };
                                     let val = self.mem.read(addr);
-                                    self.next_regs.set8(Reg8::A, val);
+                                    self.set_reg8(Reg8::A, val);
                                 }
                                 2 | 3 => {
-                                    // LD A,(HL+)
                                     size = 1;
                                     cycles = 8;
 
                                     let val = self.mem.read(self.regs.hl);
-                                    self.next_regs.set8(Reg8::A, val);
+                                    self.set_reg8(Reg8::A, val);
 
                                     if p == 2 {
+                                        // LD A,(HL+)
                                         self.next_regs.hl += 1;
                                     } else {
+                                        // LD A,(HL-)
                                         self.next_regs.hl -= 1;
                                     }
                                 }
@@ -572,7 +573,7 @@ impl Cpu {
                         if reg == Reg8::HLI {
                             cycles = 12;
                         }
-                        self.next_regs.set8(reg, val);
+                        self.set_reg8(reg, val);
                     }
                     7 => {
                         size = 1;
@@ -675,14 +676,62 @@ impl Cpu {
             3 => {
                 match z {
                     0 => {
-                        // RET cc[y]
-                        size = 1;
-                        if self.regs.flag_idx_pass(y) {
-                            cycles = 20;
-                        } else {
-                            cycles = 8;
+                        match y {
+                            0 ... 3 => {
+                                // RET cc[y]
+                                size = 1;
+                                if self.regs.flag_idx_pass(y) {
+                                    cycles = 20;
+                                } else {
+                                    cycles = 8;
+                                }
+                                self.ret();
+                            },
+                            4 => {
+                                // LDH (a8),A
+                                size = 2;
+                                cycles = 12;
+
+                                let offset = self.read_pc_val(1) as u16;
+                                let addr = 0xff00 + offset;
+                                let aval = self.get_reg8(Reg8::A);
+                                self.mem_writes.push((addr, aval));
+                            },
+                            5 | 7 => {
+                                size = 2;
+                                let to_add: u16 = self.read_pc_val(1) as u16;
+                                let (new_sp, overflow) = self.regs.sp.overflowing_add(to_add);
+
+                                if y == 5 {
+                                    // ADD SP,n
+                                    self.next_regs.sp = new_sp;
+                                    cycles = 16;
+                                } else {
+                                    // LD HL,SP+r8
+                                    cycles = 12;
+                                    self.next_regs.hl = new_sp;
+                                }
+
+                                self.next_regs.set_flag(FlagType::Z, false);
+                                self.next_regs.set_flag(FlagType::N, false);
+
+                                // Set half carry if the 12th bit changed.
+                                let hc = self.regs.sp & (1 << 12) != new_sp & (1 << 12);
+                                self.next_regs.set_flag(FlagType::H, hc);
+                                self.next_regs.set_flag(FlagType::C, overflow);
+                            },
+                            6 => {
+                                // LDH A,(a8)
+                                size = 2;
+                                cycles = 12;
+
+                                let offset = self.read_pc_val(1) as u16;
+                                let addr = 0xff00 + offset;
+                                let val = self.mem.read(addr);
+                                self.set_reg8(Reg8::A, val);
+                            },
+                            _ => panic!("Impossible")
                         }
-                        self.ret();
                     }
                     1 => {
                         if q == 0 {
@@ -725,14 +774,55 @@ impl Cpu {
                         }
                     }
                     2 => {
-                        size = 3;
-                        // JP cc[y], nn
-                        if self.regs.flag_idx_pass(y) {
-                            cycles = 16;
-                            self.next_regs.pc = self.read_pc_val(1) as u16 |
-                                                (self.read_pc_val(2) as u16) << 8;
-                        } else {
-                            cycles = 12;
+                        match y {
+                            0 ... 3 => {
+                                size = 3;
+                                // JP cc[y], nn
+                                if self.regs.flag_idx_pass(y) {
+                                    cycles = 16;
+                                    self.next_regs.pc = self.read_pc_val(1) as u16 |
+                                        (self.read_pc_val(2) as u16) << 8;
+                                } else {
+                                    cycles = 12;
+                                }
+                            },
+                            4 => {
+                                // LD (C),A
+                                size = 1;
+                                cycles = 8;
+
+                                let addr = 0xff00 + self.get_reg8(Reg8::C) as u16;
+                                let aval = self.get_reg8(Reg8::A);
+                                self.mem_writes.push((addr, aval));
+                            },
+                            5 => {
+                                // LD (a16),A
+                                size = 3;
+                                cycles = 16;
+
+                                let addr = self.read_pc_val16(1);
+                                let aval = self.get_reg8(Reg8::A);
+                                self.mem_writes.push((addr, aval));
+                            },
+                            6 => {
+                                // LD A,(C)
+                                size = 1;
+                                cycles = 8;
+
+                                let addr = 0xff00 + self.get_reg8(Reg8::C) as u16;
+                                let mem_val = self.mem.read(addr);
+                                self.set_reg8(Reg8::A, mem_val);
+                            },
+                            7 => {
+                                // LD A,(a16)
+                                size = 3;
+                                cycles = 16;
+
+                                let addr = self.read_pc_val16(1);
+                                let mem_val = self.mem.read(addr);
+                                self.set_reg8(Reg8::A, mem_val);
+                            },
+                            _ => panic!("Impossible")
                         }
                     }
                     3 => {
@@ -778,7 +868,7 @@ impl Cpu {
                                                 // SLA
                                                 let val = self.get_reg8(reg);
                                                 let new_val = val << 1;
-                                                self.next_regs.set8(reg, new_val);
+                                                self.set_reg8(reg, new_val);
                                                 self.next_regs.set_flag(FlagType::Z, new_val == 0);
                                                 self.next_regs.set_flag(FlagType::N, false);
                                                 self.next_regs.set_flag(FlagType::H, false);
@@ -793,7 +883,7 @@ impl Cpu {
                                                 if y == 5 {
                                                     new_val |= 0x80;
                                                 }
-                                                self.next_regs.set8(reg, new_val);
+                                                self.set_reg8(reg, new_val);
                                                 self.next_regs.set_flag(FlagType::Z, new_val == 0);
                                                 self.next_regs.set_flag(FlagType::N, false);
                                                 self.next_regs.set_flag(FlagType::H, false);
@@ -804,7 +894,7 @@ impl Cpu {
                                                 // SWAP
                                                 let val = self.get_reg8(reg);
                                                 let new_val = val >> 4 | val << 4;
-                                                self.next_regs.set8(reg, new_val);
+                                                self.set_reg8(reg, new_val);
                                                 self.next_regs.set_flag(FlagType::Z, new_val == 0);
                                                 self.next_regs.set_flag(FlagType::N, false);
                                                 self.next_regs.set_flag(FlagType::H, false);
@@ -819,7 +909,7 @@ impl Cpu {
                                         let reg = r_idx_to_r8(z);
                                         cycles = if reg == Reg8::HLI { 16 } else { 8 };
 
-                                        let val = self.regs.get8(reg);
+                                        let val = self.get_reg8(reg);
                                         let z = val & (1 << y) == 0;
                                         self.next_regs.set_flag(FlagType::Z, z);
                                         self.next_regs.set_flag(FlagType::N, false);
@@ -831,16 +921,16 @@ impl Cpu {
                                         size = 2;
                                         let reg = r_idx_to_r8(z);
                                         cycles = if reg == Reg8::HLI { 16 } else { 8 };
-                                        let val = self.regs.get8(reg);
-                                        self.next_regs.set8(reg, val & !(1 << y));
+                                        let val = self.get_reg8(reg);
+                                        self.set_reg8(reg, val & !(1 << y));
                                     }
                                     3 => {
                                         // SET y, r[z]
                                         size = 2;
                                         let reg = r_idx_to_r8(z);
                                         cycles = if reg == Reg8::HLI { 16 } else { 8 };
-                                        let val = self.regs.get8(reg);
-                                        self.next_regs.set8(reg, val | (1 << y));
+                                        let val = self.get_reg8(reg);
+                                        self.set_reg8(reg, val | (1 << y));
                                     }
                                     _ => panic!("Impossible"),
                                 }
