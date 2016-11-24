@@ -1,4 +1,4 @@
-use mem::mem;
+use mem::Mem;
 
 const DEFAULT_PC: u16 = 0x100;
 const DEFAULT_SP: u16 = 0xfffe;
@@ -25,12 +25,11 @@ struct NextState {
 
 struct NextStateGen<'a> {
     cpu: &'a Cpu,
+    mem: &'a Mem,
     ns: Box<NextState>,
 }
 
-#[derive(Default)]
 pub struct Cpu {
-    mem: mem::Mem,
     regs: Regs,
     inst_cycles: u8, // Cycles remaining in current instruction.
 
@@ -175,33 +174,40 @@ impl Regs {
     }
 }
 
-impl Cpu {
-    pub fn create() -> Cpu {
+impl Default for Cpu {
+    fn default() -> Cpu {
         Cpu {
             regs: Regs {
                 sp: DEFAULT_SP,
                 pc: DEFAULT_PC,
                 ..Default::default()
             },
-            ..Default::default()
+            inst_cycles: 0,
+            next_state: None,
         }
-    }
 
-    pub fn on_clock(&mut self) {
+    }
+}
+
+impl Cpu {
+    pub fn on_clock(&mut self, mem: &Mem) -> Vec<(u16, u8)> {
         match self.inst_cycles {
             0 => {
+                let mem_writes;
+
                 // Apply next_state
                 if let Some(ref next_state) = self.next_state {
                     self.regs = next_state.regs;
-                    for &(addr, val) in &next_state.mem_writes {
-                        self.mem.write(addr, val);
-                    }
+                    mem_writes = next_state.mem_writes.clone();
+                } else {
+                    mem_writes = vec![];
                 }
 
                 // Generate next state
                 let next_state = {
                     let mut nsg = NextStateGen {
                         cpu: self,
+                        mem: mem,
                         ns: Default::default(),
                     };
                     nsg.generate();
@@ -211,8 +217,13 @@ impl Cpu {
                 // Subtract one to count for this cycle.
                 self.inst_cycles = next_state.cycles - 1;
                 self.next_state = Some(next_state);
+
+                mem_writes
             }
-            _ => self.inst_cycles -= 1,
+            _ => {
+                self.inst_cycles -= 1;
+                vec![]
+            }
         }
     }
 }
@@ -224,7 +235,7 @@ impl<'a> NextStateGen<'a> {
         assert!(signed_addr >= 0 && signed_addr <= u16::max_value() as i32,
                 "PC out of range");
 
-        self.cpu.mem.read(signed_addr as u16)
+        self.mem.read(signed_addr as u16)
     }
 
     fn read_pc_val16(&self, offset: i16) -> u16 {
@@ -235,7 +246,7 @@ impl<'a> NextStateGen<'a> {
 
     fn get_reg8(&self, r8: Reg8) -> u8 {
         match r8 {
-            Reg8::HLI => self.cpu.mem.read(self.cpu.regs.get16(Reg16::HL)),
+            Reg8::HLI => self.mem.read(self.cpu.regs.get16(Reg16::HL)),
             _ => self.cpu.regs.get8(r8),
         }
     }
@@ -249,8 +260,7 @@ impl<'a> NextStateGen<'a> {
 
     fn pop(&mut self) -> u16 {
         self.ns.regs.sp = self.cpu.regs.sp + 2;
-        self.cpu.mem.read(self.cpu.regs.sp) as u16 |
-        (self.cpu.mem.read(self.cpu.regs.sp + 1) as u16) << 8
+        self.mem.read(self.cpu.regs.sp) as u16 | (self.mem.read(self.cpu.regs.sp + 1) as u16) << 8
     }
 
     fn push(&mut self, val: u16) {
@@ -412,6 +422,7 @@ impl<'a> NextStateGen<'a> {
     fn generate(&mut self) {
         // TODO: Check flags.
         // TODO: handle overflow overflowing_add
+        // Remove extra {} when only match expression.
 
         // Uninitialized to ensure every instruction defines these.
         let cycles: u8;
@@ -535,14 +546,14 @@ impl<'a> NextStateGen<'a> {
                                         //  LD A, (DE)
                                         self.cpu.regs.de
                                     };
-                                    let val = self.cpu.mem.read(addr);
+                                    let val = self.mem.read(addr);
                                     self.set_reg8(Reg8::A, val);
                                 }
                                 2 | 3 => {
                                     size = 1;
                                     cycles = 8;
 
-                                    let val = self.cpu.mem.read(self.cpu.regs.hl);
+                                    let val = self.mem.read(self.cpu.regs.hl);
                                     self.set_reg8(Reg8::A, val);
 
                                     if p == 2 {
@@ -753,7 +764,7 @@ impl<'a> NextStateGen<'a> {
 
                                 let offset = self.read_pc_val(1) as u16;
                                 let addr = 0xff00 + offset;
-                                let val = self.cpu.mem.read(addr);
+                                let val = self.mem.read(addr);
                                 self.set_reg8(Reg8::A, val);
                             }
                             _ => panic!("Impossible"),
@@ -836,7 +847,7 @@ impl<'a> NextStateGen<'a> {
                                 cycles = 8;
 
                                 let addr = 0xff00 + self.get_reg8(Reg8::C) as u16;
-                                let mem_val = self.cpu.mem.read(addr);
+                                let mem_val = self.mem.read(addr);
                                 self.set_reg8(Reg8::A, mem_val);
                             }
                             7 => {
@@ -845,7 +856,7 @@ impl<'a> NextStateGen<'a> {
                                 cycles = 16;
 
                                 let addr = self.read_pc_val16(1);
-                                let mem_val = self.cpu.mem.read(addr);
+                                let mem_val = self.mem.read(addr);
                                 self.set_reg8(Reg8::A, mem_val);
                             }
                             _ => panic!("Impossible"),
