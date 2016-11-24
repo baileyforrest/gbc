@@ -17,13 +17,24 @@ struct Regs {
 }
 
 #[derive(Default)]
+struct NextState {
+    regs: Regs,
+    mem_writes: Vec<(u16, u8)>, // Pending writes to memory.
+    cycles: u8, // Cycles required for next transition.
+}
+
+struct NextStateGen<'a> {
+    cpu: &'a Cpu,
+    ns: Box<NextState>,
+}
+
+#[derive(Default)]
 pub struct Cpu {
     mem: mem::Mem,
     regs: Regs,
-
     inst_cycles: u8, // Cycles remaining in current instruction.
-    next_regs: Regs, // Register values after instruction completes.
-    mem_writes: Vec<(u16, u8)>, // Pending writes to memory.
+
+    next_state: Option<Box<NextState>>,
 }
 
 #[derive(Copy, Clone)]
@@ -55,17 +66,6 @@ enum FlagType {
     N = 6, // Subtract flag
     H = 5, // Half carry
     C = 4, // Carry
-}
-
-pub fn create() -> Cpu {
-    Cpu {
-        regs: Regs {
-            sp: DEFAULT_SP,
-            pc: DEFAULT_PC,
-            ..Default::default()
-        },
-        ..Default::default()
-    }
 }
 
 fn r_idx_to_r8(idx: u8) -> Reg8 {
@@ -176,35 +176,55 @@ impl Regs {
 }
 
 impl Cpu {
+    pub fn create() -> Cpu {
+        Cpu {
+            regs: Regs {
+                sp: DEFAULT_SP,
+                pc: DEFAULT_PC,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
     pub fn on_clock(&mut self) {
         match self.inst_cycles {
-            0 => self.run_inst(),
-            1 => self.regs = self.next_regs,  // TODO: Set mem_writes
+            0 => {
+                // Apply next_state
+                if let Some(ref next_state) = self.next_state {
+                    self.regs = next_state.regs;
+                    for &(addr, val) in &next_state.mem_writes {
+                        self.mem.write(addr, val);
+                    }
+                }
+
+                // Generate next state
+                let next_state = {
+                    let mut nsg = NextStateGen {
+                        cpu: self,
+                        ns: Default::default(),
+                    };
+                    nsg.generate();
+                    nsg.ns
+                };
+
+                // Subtract one to count for this cycle.
+                self.inst_cycles = next_state.cycles - 1;
+                self.next_state = Some(next_state);
+            }
             _ => self.inst_cycles -= 1,
         }
     }
+}
 
-    fn get_reg8(&self, r8: Reg8) -> u8 {
-        match r8 {
-            Reg8::HLI => self.mem.read(self.regs.get16(Reg16::HL)),
-            _ => self.regs.get8(r8),
-        }
-    }
-
-    fn set_reg8(&mut self, r8: Reg8, val: u8) {
-        match r8 {
-            Reg8::HLI => self.mem_writes.push((self.regs.get16(Reg16::HL), val)),
-            _ => self.next_regs.set8(r8, val),
-        }
-    }
-
+impl<'a> NextStateGen<'a> {
     // Helper function to get values relative to pc.
     fn read_pc_val(&self, offset: i16) -> u8 {
-        let signed_addr: i32 = self.regs.pc as i32 + offset as i32;
+        let signed_addr: i32 = self.cpu.regs.pc as i32 + offset as i32;
         assert!(signed_addr >= 0 && signed_addr <= u16::max_value() as i32,
                 "PC out of range");
 
-        self.mem.read(signed_addr as u16)
+        self.cpu.mem.read(signed_addr as u16)
     }
 
     fn read_pc_val16(&self, offset: i16) -> u16 {
@@ -213,36 +233,51 @@ impl Cpu {
         byte0 | byte1 << 8
     }
 
+    fn get_reg8(&self, r8: Reg8) -> u8 {
+        match r8 {
+            Reg8::HLI => self.cpu.mem.read(self.cpu.regs.get16(Reg16::HL)),
+            _ => self.cpu.regs.get8(r8),
+        }
+    }
+
+    fn set_reg8(&mut self, r8: Reg8, val: u8) {
+        match r8 {
+            Reg8::HLI => self.ns.mem_writes.push((self.cpu.regs.get16(Reg16::HL), val)),
+            _ => self.ns.regs.set8(r8, val),
+        }
+    }
+
     fn pop(&mut self) -> u16 {
-        self.next_regs.sp = self.regs.sp + 2;
-        self.mem.read(self.regs.sp) as u16 | (self.mem.read(self.regs.sp + 1) as u16) << 8
+        self.ns.regs.sp = self.cpu.regs.sp + 2;
+        self.cpu.mem.read(self.cpu.regs.sp) as u16 |
+        (self.cpu.mem.read(self.cpu.regs.sp + 1) as u16) << 8
     }
 
     fn push(&mut self, val: u16) {
-        self.next_regs.sp = self.regs.sp - 2;
-        self.mem_writes.push((self.regs.sp - 1, (val >> 8) as u8));
-        self.mem_writes.push((self.regs.sp - 2, val as u8));
+        self.ns.regs.sp = self.cpu.regs.sp - 2;
+        self.ns.mem_writes.push((self.cpu.regs.sp - 1, (val >> 8) as u8));
+        self.ns.mem_writes.push((self.cpu.regs.sp - 2, val as u8));
     }
 
     fn ret(&mut self) {
-        self.next_regs.pc = self.pop();
+        self.ns.regs.pc = self.pop();
     }
 
     fn call(&mut self, addr: u16, ret_val: u16) {
         self.push(ret_val);
-        self.next_regs.pc = addr;
+        self.ns.regs.pc = addr;
     }
 
     fn rlc(&mut self, r: Reg8) {
         let val = self.get_reg8(r);
         let new_val = val << 1 | val >> 7;
 
-        self.next_regs.set_flag(FlagType::Z, new_val == 0);
-        self.next_regs.set_flag(FlagType::N, false);
-        self.next_regs.set_flag(FlagType::H, false);
+        self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+        self.ns.regs.set_flag(FlagType::N, false);
+        self.ns.regs.set_flag(FlagType::H, false);
 
         let c = val & (1 << 7) != 0;
-        self.next_regs.set_flag(FlagType::C, c);
+        self.ns.regs.set_flag(FlagType::C, c);
         self.set_reg8(r, new_val);
     }
 
@@ -250,36 +285,36 @@ impl Cpu {
         let val = self.get_reg8(r);
         let new_val = val >> 1 | val << 7;
 
-        self.next_regs.set_flag(FlagType::Z, new_val == 0);
-        self.next_regs.set_flag(FlagType::N, false);
-        self.next_regs.set_flag(FlagType::H, false);
+        self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+        self.ns.regs.set_flag(FlagType::N, false);
+        self.ns.regs.set_flag(FlagType::H, false);
 
         let c = val & 0x1 != 0;
-        self.next_regs.set_flag(FlagType::C, c);
+        self.ns.regs.set_flag(FlagType::C, c);
         self.set_reg8(r, new_val);
     }
 
     fn rl(&mut self, r: Reg8) {
         let val = self.get_reg8(r);
-        let new_val = val << 1 | self.regs.get_flag(FlagType::C) as u8;
+        let new_val = val << 1 | self.cpu.regs.get_flag(FlagType::C) as u8;
 
-        self.next_regs.set_flag(FlagType::Z, new_val == 0);
-        self.next_regs.set_flag(FlagType::N, false);
-        self.next_regs.set_flag(FlagType::H, false);
+        self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+        self.ns.regs.set_flag(FlagType::N, false);
+        self.ns.regs.set_flag(FlagType::H, false);
 
         let c = val & (1 << 7) != 0;
-        self.next_regs.set_flag(FlagType::C, c);
+        self.ns.regs.set_flag(FlagType::C, c);
         self.set_reg8(r, new_val);
     }
 
     fn rr(&mut self, r: Reg8) {
         let val = self.get_reg8(r);
-        let new_val = val >> 1 | (self.regs.get_flag(FlagType::C) as u8) << 7;
+        let new_val = val >> 1 | (self.cpu.regs.get_flag(FlagType::C) as u8) << 7;
 
-        self.next_regs.set_flag(FlagType::Z, new_val == 0);
-        self.next_regs.set_flag(FlagType::N, false);
-        self.next_regs.set_flag(FlagType::H, false);
-        self.next_regs.set_flag(FlagType::C, val & 0x1 == 0);
+        self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+        self.ns.regs.set_flag(FlagType::N, false);
+        self.ns.regs.set_flag(FlagType::H, false);
+        self.ns.regs.set_flag(FlagType::C, val & 0x1 == 0);
         self.set_reg8(r, new_val);
     }
 
@@ -290,97 +325,97 @@ impl Cpu {
                 // ADD A, r[z]
                 let (new_a_val, overflow) = a_val.overflowing_add(other_val);
                 self.set_reg8(Reg8::A, new_a_val);
-                self.next_regs.set_flag(FlagType::Z, new_a_val == 0);
-                self.next_regs.set_flag(FlagType::N, false);
+                self.ns.regs.set_flag(FlagType::Z, new_a_val == 0);
+                self.ns.regs.set_flag(FlagType::N, false);
 
                 let hc = new_a_val & 0xf < a_val & 0xf;
-                self.next_regs.set_flag(FlagType::H, hc);
-                self.next_regs.set_flag(FlagType::C, overflow);
+                self.ns.regs.set_flag(FlagType::H, hc);
+                self.ns.regs.set_flag(FlagType::C, overflow);
             }
             1 => {
                 // ADC A,
                 let (val1, o1) = a_val.overflowing_add(other_val);
-                let (new_a_val, o2) = val1.overflowing_add(self.regs.get_flag(FlagType::C) as u8);
+                let (new_a_val, o2) =
+                    val1.overflowing_add(self.cpu.regs.get_flag(FlagType::C) as u8);
                 self.set_reg8(Reg8::A, new_a_val);
-                self.next_regs.set_flag(FlagType::Z, new_a_val == 0);
-                self.next_regs.set_flag(FlagType::N, false);
+                self.ns.regs.set_flag(FlagType::Z, new_a_val == 0);
+                self.ns.regs.set_flag(FlagType::N, false);
 
                 let hc = new_a_val & 0xf < a_val & 0xf;
-                self.next_regs.set_flag(FlagType::H, hc);
-                self.next_regs.set_flag(FlagType::C, o1 || o2);
+                self.ns.regs.set_flag(FlagType::H, hc);
+                self.ns.regs.set_flag(FlagType::C, o1 || o2);
             }
             2 => {
                 // SUB
                 let (new_a_val, overflow) = a_val.overflowing_sub(other_val);
                 self.set_reg8(Reg8::A, new_a_val);
-                self.next_regs.set_flag(FlagType::Z, new_a_val == 0);
-                self.next_regs.set_flag(FlagType::N, true);
+                self.ns.regs.set_flag(FlagType::Z, new_a_val == 0);
+                self.ns.regs.set_flag(FlagType::N, true);
 
                 let hc = a_val & 0xf < other_val & 0xf;
-                self.next_regs.set_flag(FlagType::H, hc);
-                self.next_regs.set_flag(FlagType::C, overflow);
+                self.ns.regs.set_flag(FlagType::H, hc);
+                self.ns.regs.set_flag(FlagType::C, overflow);
             }
             3 => {
                 // SBC A,
-                let with_carry = a_val as u16 | (self.regs.get_flag(FlagType::C) as u16) << 8;
+                let with_carry = a_val as u16 | (self.cpu.regs.get_flag(FlagType::C) as u16) << 8;
                 let (new_a_val, overflow) = with_carry.overflowing_sub(other_val as u16);
                 self.set_reg8(Reg8::A, new_a_val as u8);
-                self.next_regs.set_flag(FlagType::Z, new_a_val == 0);
-                self.next_regs.set_flag(FlagType::N, true);
+                self.ns.regs.set_flag(FlagType::Z, new_a_val == 0);
+                self.ns.regs.set_flag(FlagType::N, true);
 
                 let hc = with_carry & 0xff < other_val as u16 & 0xff;
-                self.next_regs.set_flag(FlagType::H, hc);
-                self.next_regs.set_flag(FlagType::C, overflow);
+                self.ns.regs.set_flag(FlagType::H, hc);
+                self.ns.regs.set_flag(FlagType::C, overflow);
             }
             4 => {
                 // AND
                 let new_a_val = a_val & other_val;
                 self.set_reg8(Reg8::A, new_a_val);
-                self.next_regs.set_flag(FlagType::Z, new_a_val == 0);
-                self.next_regs.set_flag(FlagType::N, false);
-                self.next_regs.set_flag(FlagType::H, true);
-                self.next_regs.set_flag(FlagType::C, false);
+                self.ns.regs.set_flag(FlagType::Z, new_a_val == 0);
+                self.ns.regs.set_flag(FlagType::N, false);
+                self.ns.regs.set_flag(FlagType::H, true);
+                self.ns.regs.set_flag(FlagType::C, false);
             }
             5 => {
                 // XOR
                 let new_a_val = a_val ^ other_val;
                 self.set_reg8(Reg8::A, new_a_val);
-                self.next_regs.set_flag(FlagType::Z, new_a_val == 0);
-                self.next_regs.set_flag(FlagType::N, false);
-                self.next_regs.set_flag(FlagType::H, false);
-                self.next_regs.set_flag(FlagType::C, false);
+                self.ns.regs.set_flag(FlagType::Z, new_a_val == 0);
+                self.ns.regs.set_flag(FlagType::N, false);
+                self.ns.regs.set_flag(FlagType::H, false);
+                self.ns.regs.set_flag(FlagType::C, false);
             }
             6 => {
                 // OR
                 let new_a_val = a_val | other_val;
                 self.set_reg8(Reg8::A, new_a_val);
-                self.next_regs.set_flag(FlagType::Z, new_a_val == 0);
-                self.next_regs.set_flag(FlagType::N, false);
-                self.next_regs.set_flag(FlagType::H, false);
-                self.next_regs.set_flag(FlagType::C, false);
+                self.ns.regs.set_flag(FlagType::Z, new_a_val == 0);
+                self.ns.regs.set_flag(FlagType::N, false);
+                self.ns.regs.set_flag(FlagType::H, false);
+                self.ns.regs.set_flag(FlagType::C, false);
             }
             7 => {
                 // CP
                 let (new_a_val, overflow) = a_val.overflowing_sub(other_val);
-                self.next_regs.set_flag(FlagType::Z, new_a_val == 0);
-                self.next_regs.set_flag(FlagType::N, true);
+                self.ns.regs.set_flag(FlagType::Z, new_a_val == 0);
+                self.ns.regs.set_flag(FlagType::N, true);
 
                 let hc = a_val & 0xf < other_val & 0xf;
-                self.next_regs.set_flag(FlagType::H, hc);
-                self.next_regs.set_flag(FlagType::C, overflow);
+                self.ns.regs.set_flag(FlagType::H, hc);
+                self.ns.regs.set_flag(FlagType::C, overflow);
             }
             _ => panic!("Impossible"),
         }
     }
 
-    fn run_inst(&mut self) {
+    fn generate(&mut self) {
         // TODO: Check flags.
         // TODO: handle overflow overflowing_add
-        // TODO: Don't add size when calling.
-        let mut cycles: u8;
-        let size: u16;
 
-        self.next_regs = self.regs;
+        // Uninitialized to ensure every instruction defines these.
+        let cycles: u8;
+        let size: u16;
 
         let byte0 = self.read_pc_val(0);
         let x = (byte0 >> 6) & 0x3; // [7:6]
@@ -405,15 +440,15 @@ impl Cpu {
                                 cycles = 20;
 
                                 let addr = self.read_pc_val16(1);
-                                let val = self.regs.sp;
-                                self.mem_writes.push((addr, val as u8));
-                                self.mem_writes.push((addr + 1, (val >> 8) as u8));
+                                let val = self.cpu.regs.sp;
+                                self.ns.mem_writes.push((addr, val as u8));
+                                self.ns.mem_writes.push((addr + 1, (val >> 8) as u8));
                             }
                             2 => {
                                 // STOP
                                 size = 2;
                                 cycles = 4;
-                                self.next_regs.stopped = true;
+                                self.ns.regs.stopped = true;
                             }
                             3...7 => {
                                 // y == 3: JR d
@@ -421,12 +456,12 @@ impl Cpu {
                                 size = 2;
                                 let cc_idx = y - 4;
 
-                                if y == 3 || self.regs.flag_idx_pass(cc_idx) {
+                                if y == 3 || self.cpu.regs.flag_idx_pass(cc_idx) {
                                     cycles = 12;
                                     let val = self.read_pc_val(1);
                                     // TODO: is it pc before or after current instruction?
-                                    let next_pc = self.regs.get16(Reg16::PC) + val as u16;
-                                    self.next_regs.set16(Reg16::PC, next_pc);
+                                    let next_pc = self.cpu.regs.get16(Reg16::PC) + val as u16;
+                                    self.ns.regs.set16(Reg16::PC, next_pc);
                                 } else {
                                     cycles = 8;
                                 }
@@ -442,14 +477,14 @@ impl Cpu {
 
                             let val = self.read_pc_val16(1);
                             let dst_reg = rp_idx_to_r16(p);
-                            self.next_regs.set16(dst_reg, val);
+                            self.ns.regs.set16(dst_reg, val);
                         } else {
                             size = 1;
                             cycles = 8;
                             // ADD HL, rp[p]
-                            let add_val = self.regs.get16(rp_idx_to_r16(p));
-                            self.next_regs.hl += add_val;
-                            self.next_regs.set_flag(FlagType::N, false);
+                            let add_val = self.cpu.regs.get16(rp_idx_to_r16(p));
+                            self.ns.regs.hl += add_val;
+                            self.ns.regs.set_flag(FlagType::N, false);
                         }
                     }
                     2 => {
@@ -461,28 +496,28 @@ impl Cpu {
 
                                     let dst_addr = if p == 0 {
                                         // LD (BC), A
-                                        self.regs.bc
+                                        self.cpu.regs.bc
                                     } else {
                                         // LD (DE), A
-                                        self.regs.de
+                                        self.cpu.regs.de
                                     };
 
                                     let write_op = (dst_addr, self.get_reg8(Reg8::A));
-                                    self.mem_writes.push(write_op);
+                                    self.ns.mem_writes.push(write_op);
                                 }
                                 2 | 3 => {
                                     size = 1;
                                     cycles = 8;
 
-                                    let write_op = (self.regs.hl, self.get_reg8(Reg8::A));
-                                    self.mem_writes.push(write_op);
+                                    let write_op = (self.cpu.regs.hl, self.get_reg8(Reg8::A));
+                                    self.ns.mem_writes.push(write_op);
 
                                     if p == 2 {
                                         // LD (HL+),A
-                                        self.next_regs.hl += 1;
+                                        self.ns.regs.hl += 1;
                                     } else {
                                         // LD (HL-),A
-                                        self.next_regs.hl -= 1;
+                                        self.ns.regs.hl -= 1;
                                     }
                                 }
                                 _ => panic!("Impossible"),
@@ -495,27 +530,27 @@ impl Cpu {
 
                                     let addr = if p == 0 {
                                         // LD A, (BC)
-                                        self.regs.bc
+                                        self.cpu.regs.bc
                                     } else {
                                         //  LD A, (DE)
-                                        self.regs.de
+                                        self.cpu.regs.de
                                     };
-                                    let val = self.mem.read(addr);
+                                    let val = self.cpu.mem.read(addr);
                                     self.set_reg8(Reg8::A, val);
                                 }
                                 2 | 3 => {
                                     size = 1;
                                     cycles = 8;
 
-                                    let val = self.mem.read(self.regs.hl);
+                                    let val = self.cpu.mem.read(self.cpu.regs.hl);
                                     self.set_reg8(Reg8::A, val);
 
                                     if p == 2 {
                                         // LD A,(HL+)
-                                        self.next_regs.hl += 1;
+                                        self.ns.regs.hl += 1;
                                     } else {
                                         // LD A,(HL-)
-                                        self.next_regs.hl -= 1;
+                                        self.ns.regs.hl -= 1;
                                     }
                                 }
                                 _ => panic!("Impossible"),
@@ -526,7 +561,7 @@ impl Cpu {
                         size = 1;
                         cycles = 8;
                         let reg = rp_idx_to_r16(p);
-                        let val = self.regs.get16(reg);
+                        let val = self.cpu.regs.get16(reg);
                         let new_val = if q == 0 {
                             // INC rp[p]
                             val + 1
@@ -534,45 +569,39 @@ impl Cpu {
                             // DEC rp[p]
                             val - 1
                         };
-                        self.next_regs.set16(reg, new_val);
+                        self.ns.regs.set16(reg, new_val);
                     }
                     4 | 5 => {
                         size = 1;
-                        cycles = 4;
 
                         let reg = r_idx_to_r8(y);
-                        if reg == Reg8::HLI {
-                            cycles = 12;
-                        }
+                        cycles = if reg == Reg8::HLI { 12 } else { 4 };
 
                         let val = self.get_reg8(reg);
                         let new_val;
                         if z == 4 {
                             // INC r[y]
                             new_val = val + 1;
-                            self.next_regs.set_flag(FlagType::N, false);
+                            self.ns.regs.set_flag(FlagType::N, false);
                         } else {
                             // DEC r[y]
                             new_val = val - 1;
-                            self.next_regs.set_flag(FlagType::N, true);
+                            self.ns.regs.set_flag(FlagType::N, true);
                         }
 
                         self.set_reg8(reg, val);
-                        self.next_regs.set_flag(FlagType::Z, new_val == 0);
+                        self.ns.regs.set_flag(FlagType::Z, new_val == 0);
 
                         // Half carry occured if 4th bit changed.
                         let hc = val & !(1 << 4) != new_val & !(1 << 4);
-                        self.next_regs.set_flag(FlagType::H, hc);
+                        self.ns.regs.set_flag(FlagType::H, hc);
                     }
                     6 => {
                         // LD r[y], n
                         size = 2;
-                        cycles = 8;
                         let val = self.read_pc_val(1);
                         let reg = r_idx_to_r8(y);
-                        if reg == Reg8::HLI {
-                            cycles = 12;
-                        }
+                        cycles = if reg == Reg8::HLI { 12 } else { 8 };
                         self.set_reg8(reg, val);
                     }
                     7 => {
@@ -608,32 +637,32 @@ impl Cpu {
                                 }
 
                                 let new_val = bcd as u8;
-                                self.next_regs.set_flag(FlagType::Z, new_val == 0);
-                                self.next_regs.set_flag(FlagType::H, false);
-                                self.next_regs.set_flag(FlagType::C, bcd > 0xff);
+                                self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+                                self.ns.regs.set_flag(FlagType::H, false);
+                                self.ns.regs.set_flag(FlagType::C, bcd > 0xff);
                                 self.set_reg8(Reg8::A, new_val);
                             }
                             5 => {
                                 // CPL
                                 let val = self.get_reg8(Reg8::A);
                                 let new_val = !val;
-                                self.next_regs.set_flag(FlagType::N, true);
-                                self.next_regs.set_flag(FlagType::H, true);
+                                self.ns.regs.set_flag(FlagType::N, true);
+                                self.ns.regs.set_flag(FlagType::H, true);
                                 self.set_reg8(Reg8::A, new_val);
                             }
                             6 => {
                                 // SCF
-                                self.next_regs.set_flag(FlagType::N, false);
-                                self.next_regs.set_flag(FlagType::H, false);
-                                self.next_regs.set_flag(FlagType::C, true);
+                                self.ns.regs.set_flag(FlagType::N, false);
+                                self.ns.regs.set_flag(FlagType::H, false);
+                                self.ns.regs.set_flag(FlagType::C, true);
                             }
                             7 => {
                                 // CCF
-                                self.next_regs.set_flag(FlagType::N, false);
-                                self.next_regs.set_flag(FlagType::H, false);
+                                self.ns.regs.set_flag(FlagType::N, false);
+                                self.ns.regs.set_flag(FlagType::H, false);
 
-                                let c = self.next_regs.get_flag(FlagType::C);
-                                self.next_regs.set_flag(FlagType::C, !c);
+                                let c = self.ns.regs.get_flag(FlagType::C);
+                                self.ns.regs.set_flag(FlagType::C, !c);
                             }
                             _ => panic!("Impossible"),
                         }
@@ -646,7 +675,7 @@ impl Cpu {
                     // HALT
                     size = 1;
                     cycles = 4;
-                    self.next_regs.halted = true;
+                    self.ns.regs.halted = true;
                 } else {
                     // LD r[y], r[z]
                     size = 1;
@@ -665,11 +694,8 @@ impl Cpu {
             }
             2 => {
                 size = 1;
-                cycles = 4;
                 let other = r_idx_to_r8(z);
-                if other == Reg8::HLI {
-                    cycles = 8;
-                }
+                cycles = if other == Reg8::HLI { 8 } else { 4 };
                 let other_val = self.get_reg8(other);
                 self.alu(y, other_val);
             }
@@ -677,16 +703,16 @@ impl Cpu {
                 match z {
                     0 => {
                         match y {
-                            0 ... 3 => {
+                            0...3 => {
                                 // RET cc[y]
                                 size = 1;
-                                if self.regs.flag_idx_pass(y) {
+                                if self.cpu.regs.flag_idx_pass(y) {
                                     cycles = 20;
                                 } else {
                                     cycles = 8;
                                 }
                                 self.ret();
-                            },
+                            }
                             4 => {
                                 // LDH (a8),A
                                 size = 2;
@@ -695,31 +721,31 @@ impl Cpu {
                                 let offset = self.read_pc_val(1) as u16;
                                 let addr = 0xff00 + offset;
                                 let aval = self.get_reg8(Reg8::A);
-                                self.mem_writes.push((addr, aval));
-                            },
+                                self.ns.mem_writes.push((addr, aval));
+                            }
                             5 | 7 => {
                                 size = 2;
                                 let to_add: u16 = self.read_pc_val(1) as u16;
-                                let (new_sp, overflow) = self.regs.sp.overflowing_add(to_add);
+                                let (new_sp, overflow) = self.cpu.regs.sp.overflowing_add(to_add);
 
                                 if y == 5 {
                                     // ADD SP,n
-                                    self.next_regs.sp = new_sp;
+                                    self.ns.regs.sp = new_sp;
                                     cycles = 16;
                                 } else {
                                     // LD HL,SP+r8
                                     cycles = 12;
-                                    self.next_regs.hl = new_sp;
+                                    self.ns.regs.hl = new_sp;
                                 }
 
-                                self.next_regs.set_flag(FlagType::Z, false);
-                                self.next_regs.set_flag(FlagType::N, false);
+                                self.ns.regs.set_flag(FlagType::Z, false);
+                                self.ns.regs.set_flag(FlagType::N, false);
 
                                 // Set half carry if the 12th bit changed.
-                                let hc = self.regs.sp & (1 << 12) != new_sp & (1 << 12);
-                                self.next_regs.set_flag(FlagType::H, hc);
-                                self.next_regs.set_flag(FlagType::C, overflow);
-                            },
+                                let hc = self.cpu.regs.sp & (1 << 12) != new_sp & (1 << 12);
+                                self.ns.regs.set_flag(FlagType::H, hc);
+                                self.ns.regs.set_flag(FlagType::C, overflow);
+                            }
                             6 => {
                                 // LDH A,(a8)
                                 size = 2;
@@ -727,10 +753,10 @@ impl Cpu {
 
                                 let offset = self.read_pc_val(1) as u16;
                                 let addr = 0xff00 + offset;
-                                let val = self.mem.read(addr);
+                                let val = self.cpu.mem.read(addr);
                                 self.set_reg8(Reg8::A, val);
-                            },
-                            _ => panic!("Impossible")
+                            }
+                            _ => panic!("Impossible"),
                         }
                     }
                     1 => {
@@ -741,7 +767,7 @@ impl Cpu {
 
                             let reg = rp2_idx_to_r16(p);
                             let val = self.pop();
-                            self.next_regs.set16(reg, val);
+                            self.ns.regs.set16(reg, val);
                         } else {
                             match p {
                                 0 => {
@@ -754,20 +780,20 @@ impl Cpu {
                                     // RETI
                                     size = 1;
                                     cycles = 8;
-                                    self.next_regs.enable_interrupts = true;
+                                    self.ns.regs.enable_interrupts = true;
                                     self.ret();
                                 }
                                 2 => {
                                     // JP (HL)
                                     size = 1;
                                     cycles = 4;
-                                    self.next_regs.pc = self.regs.hl;
+                                    self.ns.regs.pc = self.cpu.regs.hl;
                                 }
                                 3 => {
                                     // LD SP, HL
                                     size = 1;
                                     cycles = 8;
-                                    self.next_regs.sp = self.regs.hl;
+                                    self.ns.regs.sp = self.cpu.regs.hl;
                                 }
                                 _ => panic!("Impossible"),
                             }
@@ -775,17 +801,17 @@ impl Cpu {
                     }
                     2 => {
                         match y {
-                            0 ... 3 => {
+                            0...3 => {
                                 size = 3;
                                 // JP cc[y], nn
-                                if self.regs.flag_idx_pass(y) {
+                                if self.cpu.regs.flag_idx_pass(y) {
                                     cycles = 16;
-                                    self.next_regs.pc = self.read_pc_val(1) as u16 |
-                                        (self.read_pc_val(2) as u16) << 8;
+                                    self.ns.regs.pc = self.read_pc_val(1) as u16 |
+                                                      (self.read_pc_val(2) as u16) << 8;
                                 } else {
                                     cycles = 12;
                                 }
-                            },
+                            }
                             4 => {
                                 // LD (C),A
                                 size = 1;
@@ -793,8 +819,8 @@ impl Cpu {
 
                                 let addr = 0xff00 + self.get_reg8(Reg8::C) as u16;
                                 let aval = self.get_reg8(Reg8::A);
-                                self.mem_writes.push((addr, aval));
-                            },
+                                self.ns.mem_writes.push((addr, aval));
+                            }
                             5 => {
                                 // LD (a16),A
                                 size = 3;
@@ -802,27 +828,27 @@ impl Cpu {
 
                                 let addr = self.read_pc_val16(1);
                                 let aval = self.get_reg8(Reg8::A);
-                                self.mem_writes.push((addr, aval));
-                            },
+                                self.ns.mem_writes.push((addr, aval));
+                            }
                             6 => {
                                 // LD A,(C)
                                 size = 1;
                                 cycles = 8;
 
                                 let addr = 0xff00 + self.get_reg8(Reg8::C) as u16;
-                                let mem_val = self.mem.read(addr);
+                                let mem_val = self.cpu.mem.read(addr);
                                 self.set_reg8(Reg8::A, mem_val);
-                            },
+                            }
                             7 => {
                                 // LD A,(a16)
                                 size = 3;
                                 cycles = 16;
 
                                 let addr = self.read_pc_val16(1);
-                                let mem_val = self.mem.read(addr);
+                                let mem_val = self.cpu.mem.read(addr);
                                 self.set_reg8(Reg8::A, mem_val);
-                            },
-                            _ => panic!("Impossible")
+                            }
+                            _ => panic!("Impossible"),
                         }
                     }
                     3 => {
@@ -832,7 +858,7 @@ impl Cpu {
                                 size = 3;
                                 cycles = 12;
 
-                                self.next_regs.pc = self.read_pc_val16(1);
+                                self.ns.regs.pc = self.read_pc_val16(1);
                             }
                             1 => {
                                 // CB prefix
@@ -869,10 +895,11 @@ impl Cpu {
                                                 let val = self.get_reg8(reg);
                                                 let new_val = val << 1;
                                                 self.set_reg8(reg, new_val);
-                                                self.next_regs.set_flag(FlagType::Z, new_val == 0);
-                                                self.next_regs.set_flag(FlagType::N, false);
-                                                self.next_regs.set_flag(FlagType::H, false);
-                                                self.next_regs
+                                                self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+                                                self.ns.regs.set_flag(FlagType::N, false);
+                                                self.ns.regs.set_flag(FlagType::H, false);
+                                                self.ns
+                                                    .regs
                                                     .set_flag(FlagType::C, new_val & (1 << 7) != 0);
                                             }
                                             5 | 7 => {
@@ -884,10 +911,11 @@ impl Cpu {
                                                     new_val |= 0x80;
                                                 }
                                                 self.set_reg8(reg, new_val);
-                                                self.next_regs.set_flag(FlagType::Z, new_val == 0);
-                                                self.next_regs.set_flag(FlagType::N, false);
-                                                self.next_regs.set_flag(FlagType::H, false);
-                                                self.next_regs
+                                                self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+                                                self.ns.regs.set_flag(FlagType::N, false);
+                                                self.ns.regs.set_flag(FlagType::H, false);
+                                                self.ns
+                                                    .regs
                                                     .set_flag(FlagType::C, new_val & (1 << 7) != 0);
                                             }
                                             6 => {
@@ -895,10 +923,10 @@ impl Cpu {
                                                 let val = self.get_reg8(reg);
                                                 let new_val = val >> 4 | val << 4;
                                                 self.set_reg8(reg, new_val);
-                                                self.next_regs.set_flag(FlagType::Z, new_val == 0);
-                                                self.next_regs.set_flag(FlagType::N, false);
-                                                self.next_regs.set_flag(FlagType::H, false);
-                                                self.next_regs.set_flag(FlagType::C, false);
+                                                self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+                                                self.ns.regs.set_flag(FlagType::N, false);
+                                                self.ns.regs.set_flag(FlagType::H, false);
+                                                self.ns.regs.set_flag(FlagType::C, false);
                                             }
                                             _ => panic!("Impossible"),
                                         }
@@ -911,9 +939,9 @@ impl Cpu {
 
                                         let val = self.get_reg8(reg);
                                         let z = val & (1 << y) == 0;
-                                        self.next_regs.set_flag(FlagType::Z, z);
-                                        self.next_regs.set_flag(FlagType::N, false);
-                                        self.next_regs.set_flag(FlagType::H, true);
+                                        self.ns.regs.set_flag(FlagType::Z, z);
+                                        self.ns.regs.set_flag(FlagType::N, false);
+                                        self.ns.regs.set_flag(FlagType::H, true);
 
                                     }
                                     2 => {
@@ -949,13 +977,13 @@ impl Cpu {
                                 // DI
                                 size = 1;
                                 cycles = 4;
-                                self.next_regs.enable_interrupts = false;
+                                self.ns.regs.enable_interrupts = false;
                             }
                             7 => {
                                 // EI
                                 size = 1;
                                 cycles = 4;
-                                self.next_regs.enable_interrupts = true;
+                                self.ns.regs.enable_interrupts = true;
                             }
                             _ => panic!("Impossible"),
                         }
@@ -963,10 +991,10 @@ impl Cpu {
                     4 => {
                         // CALL cc[y], nn
                         size = 3;
-                        if self.regs.flag_idx_pass(y) {
+                        if self.cpu.regs.flag_idx_pass(y) {
                             cycles = 24;
                             let addr = self.read_pc_val16(1);
-                            let ret_addr = self.regs.pc + 3;
+                            let ret_addr = self.cpu.regs.pc + 3;
                             self.call(addr, ret_addr);
                         } else {
                             cycles = 12;
@@ -977,7 +1005,7 @@ impl Cpu {
                             // PUSH rp2[p]
                             size = 1;
                             cycles = 16;
-                            let val = self.regs.get16(rp2_idx_to_r16(p));
+                            let val = self.cpu.regs.get16(rp2_idx_to_r16(p));
                             self.push(val);
                         } else {
                             if p == 0 {
@@ -986,7 +1014,7 @@ impl Cpu {
                                 cycles = 12;
 
                                 let addr = self.read_pc_val16(1);
-                                let ret_addr = self.regs.pc + 3;
+                                let ret_addr = self.cpu.regs.pc + 3;
                                 self.call(addr, ret_addr);
                             } else {
                                 // 1. DD prefix
@@ -1009,9 +1037,9 @@ impl Cpu {
                         size = 1;
                         cycles = 32;
 
-                        let pc = self.regs.pc;
+                        let pc = self.cpu.regs.pc;
                         self.push(pc);
-                        self.next_regs.pc = y as u16 * 8;
+                        self.ns.regs.pc = y as u16 * 8;
                     }
                     _ => panic!("Impossible"),
                 }
@@ -1019,8 +1047,12 @@ impl Cpu {
             _ => panic!("Impossible"),
         }
 
-        self.inst_cycles = cycles;
-        self.next_regs.pc += size;
+        self.ns.cycles = cycles;
+
+        // Increment PC to next instruction if it didn't change.
+        if self.ns.regs.pc == self.cpu.regs.pc {
+            self.ns.regs.pc += size;
+        }
     }
 }
 
