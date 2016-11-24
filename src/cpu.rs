@@ -1,7 +1,16 @@
-use mem::Mem;
+use mem;
 
 const DEFAULT_PC: u16 = 0x100;
 const DEFAULT_SP: u16 = 0xfffe;
+
+// TODO: support interrupts.
+pub enum Interrupt {
+    Vblank = 0x40,
+    LcdStatus = 0x48,
+    Timer = 0x50,
+    Serial = 0x58,
+    Joypad = 0x60,
+}
 
 #[derive(Default, Copy, Clone)]
 struct Regs {
@@ -25,7 +34,7 @@ struct NextState {
 
 struct NextStateGen<'a> {
     cpu: &'a Cpu,
-    mem: &'a Mem,
+    mem: &'a mem::Mem,
     ns: Box<NextState>,
 }
 
@@ -190,17 +199,16 @@ impl Default for Cpu {
 }
 
 impl Cpu {
-    pub fn on_clock(&mut self, mem: &Mem) -> Vec<(u16, u8)> {
+    pub fn on_clock(&mut self, mem: &mut mem::Mem) {
         match self.inst_cycles {
             0 => {
-                let mem_writes;
-
                 // Apply next_state
                 if let Some(ref next_state) = self.next_state {
                     self.regs = next_state.regs;
-                    mem_writes = next_state.mem_writes.clone();
-                } else {
-                    mem_writes = vec![];
+
+                    for &(addr, val) in &next_state.mem_writes {
+                        mem.write(addr, val);
+                    }
                 }
 
                 // Generate next state
@@ -217,13 +225,8 @@ impl Cpu {
                 // Subtract one to count for this cycle.
                 self.inst_cycles = next_state.cycles - 1;
                 self.next_state = Some(next_state);
-
-                mem_writes
             }
-            _ => {
-                self.inst_cycles -= 1;
-                vec![]
-            }
+            _ => self.inst_cycles -= 1,
         }
     }
 }

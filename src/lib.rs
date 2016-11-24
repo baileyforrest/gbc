@@ -1,19 +1,18 @@
-pub mod cpu;
-pub mod mem;
+mod cpu;
+mod lcd;
+mod mem;
 
 #[derive(Default)]
 struct Gbc {
     cpu: cpu::Cpu,
     mem: mem::Mem,
+    lcd: lcd::Lcd,
 }
 
 impl Gbc {
     fn on_clock(&mut self) {
-        let mem_writes = self.cpu.on_clock(&self.mem);
-
-        for &(addr, val) in &mem_writes {
-            self.mem.write(addr, val);
-        }
+        self.cpu.on_clock(&mut self.mem);
+        self.lcd.on_clock(&mut self.mem);
     }
 }
 

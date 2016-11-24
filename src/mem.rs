@@ -1,5 +1,10 @@
 use std;
 
+use cpu;
+
+const INTERRUPT_ENABLE_ADDR: u16 = 0xffff;
+const INTERRUPT_FLAG_ADDR: u16 = 0xff0f;
+
 #[derive(Copy, Clone, PartialEq)]
 enum MbcType {
     MbcNone,
@@ -38,18 +43,11 @@ pub struct Mem {
     // E000-FDFF   Same as C000-DDFF (ECHO)    (typically not used)
     //
     // FE00-FE9F   Sprite Attribute Table (OAM)
-    oam: [u8; 160],
-
     // FEA0-FEFF   Not Usable
-    //
     // FF00-FF7F   I/O Ports
-    io_ports: [u8; 128],
-
     // FF80-FFFE   High RAM (HRAM)
-    hi_ram: [u8; 127],
-
     // FFFF        Interrupt Enable Register
-    inter_en: u8,
+    high_ram: [u8; 0x200],
 }
 
 #[derive(Debug)]
@@ -80,10 +78,7 @@ impl Default for Mem {
             cartridge: Default::default(),
             vram: [[0; 0x4000]; 2],
             work_ram: [[0; 0x1000]; 8],
-            oam: [0; 160],
-            io_ports: [0; 128],
-            hi_ram: [0; 127],
-            inter_en: 0,
+            high_ram: [0; 0x200],
         }
     }
 }
@@ -214,19 +209,91 @@ impl Cartridge {
 impl Mem {
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
-            0x0000...0x7fff | 0xa000...0xbfff => return self.cartridge.read(addr),
-            _ => panic!("Unimplemented"),
+            0x0000...0x7fff | 0xa000...0xbfff => self.cartridge.read(addr),
+            0x8000...0x9fff => {
+                // FF4F - VBK - CGB Mode Only - VRAM Bank
+                let vbk = self.read(0xff4f);
+                if vbk & 0x1 == 0 {
+                    self.vram[0][addr as usize - 0x8000]
+                } else {
+                    self.vram[1][addr as usize - 0x8000]
+                }
+            }
+            0xc000...0xcfff => self.work_ram[0][addr as usize - 0xc000],
+            0xd000...0xdfff => {
+                // FF70 - SVBK - CGB Mode Only - WRAM Bank
+                let svbk = self.read(0xff70);
+                let idx = svbk & 0x7;
+                self.work_ram[idx as usize][addr as usize - 0xd000]
+            }
+            0xe000...0xfdff => self.read(addr - 0x2000),
+            0xfe00...0xffff => self.high_ram[addr as usize - 0xfe00],
+            _ => panic!("Impossible"),
         }
     }
 
     pub fn write(&mut self, addr: u16, val: u8) {
         match addr {
-            0x0000...0x7fff | 0xa000...0xbfff => return self.cartridge.write(addr, val),
-            _ => panic!("Unimplemented"),
+            0x0000...0x7fff | 0xa000...0xbfff => self.cartridge.write(addr, val),
+            0x8000...0x9fff => {
+                // FF4F - VBK - CGB Mode Only - VRAM Bank
+                let vbk = self.read(0xff4f);
+                if vbk & 0x1 == 0 {
+                    self.vram[0][addr as usize - 0x8000] = val;
+                } else {
+                    self.vram[1][addr as usize - 0x8000] = val;
+                }
+            }
+            0xc000...0xcfff => self.work_ram[0][addr as usize - 0xc000] = val,
+            0xd000...0xdfff => {
+                // FF70 - SVBK - CGB Mode Only - WRAM Bank
+                let svbk = self.read(0xff70);
+                let idx = svbk & 0x7;
+                self.work_ram[idx as usize][addr as usize - 0xd000] = val;
+            }
+            0xe000...0xfdff => self.write(addr - 0x2000, val),
+            0xfe00...0xffff => self.high_ram[addr as usize - 0xfe00] = val,
+            _ => panic!("Impossible"),
         }
+    }
+
+    pub fn set_interrupt_en(&mut self, intr: cpu::Interrupt, set: bool) {
+        let mask = 1u8 << interrupt_bit(intr);
+        let val = self.read(INTERRUPT_ENABLE_ADDR);
+        let new_val = if set { val | mask } else { val & !mask };
+        self.write(INTERRUPT_ENABLE_ADDR, new_val);
+    }
+
+    pub fn get_interrupt_en(&mut self, intr: cpu::Interrupt) -> bool {
+        let mask = 1u8 << interrupt_bit(intr);
+        let val = self.read(INTERRUPT_ENABLE_ADDR);
+        val & mask != 0
+    }
+
+    pub fn set_interrupt_flag(&mut self, intr: cpu::Interrupt, set: bool) {
+        let mask = 1u8 << interrupt_bit(intr);
+        let val = self.read(INTERRUPT_FLAG_ADDR);
+        let new_val = if set { val | mask } else { val & !mask };
+        self.write(INTERRUPT_FLAG_ADDR, new_val);
+    }
+
+    pub fn get_interrupt_flag(&mut self, intr: cpu::Interrupt) -> bool {
+        let mask = 1u8 << interrupt_bit(intr);
+        let val = self.read(INTERRUPT_FLAG_ADDR);
+        val & mask != 0
     }
 
     pub fn load_cartridge(&mut self, rom: &mut std::io::Read) -> Result<(), CartErr> {
         self.cartridge.load(rom)
+    }
+}
+
+fn interrupt_bit(intr: cpu::Interrupt) -> u8 {
+    match intr {
+        cpu::Interrupt::Vblank => 0,
+        cpu::Interrupt::LcdStatus => 1,
+        cpu::Interrupt::Timer => 2,
+        cpu::Interrupt::Serial => 3,
+        cpu::Interrupt::Joypad => 4,
     }
 }
