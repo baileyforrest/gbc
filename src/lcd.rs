@@ -48,10 +48,12 @@ pub struct Lcd {
     int_en_vblank: bool,
     int_en_hblank: bool,
 
-    lyc_eq_ly: bool, // TODO send interrupt
+    lyc_eq_ly: bool,
     mode: LcdMode,
     mode_cycles: usize,
     cur_row_num: u8,
+
+    frame_buf: FrameBuffer,
 }
 
 impl Default for Lcd {
@@ -73,6 +75,7 @@ impl Default for Lcd {
             mode: LcdMode::Vblank,
             mode_cycles: 0,
             cur_row_num: 0,
+            frame_buf: [[[0u8; 3]; SCREEN_WIDTH as usize]; SCREEN_HEIGHT as usize],
         }
     }
 }
@@ -82,6 +85,10 @@ impl Lcd {
         self.process_control(mem);
         self.process_state(mem);
         self.process_status(mem);
+    }
+
+    pub fn get_frame_buffer(&self) -> &FrameBuffer {
+        &self.frame_buf
     }
 
     // Check FF40 - LCDC - LCD Control (R/W)
@@ -151,6 +158,8 @@ impl Lcd {
             if self.lyc_eq_ly && self.int_en_lyc_eq_ly {
                 mem.set_interrupt_flag(cpu::Interrupt::LcdStatus, true);
             }
+
+            self.gen_line(mem);
         }
 
         self.mode = match self.mode {
@@ -277,55 +286,53 @@ impl Lcd {
         self.gen_tile_color_idx(mem, tile_base_addr, tile_x, tile_y)
     }
 
-    fn gen_screen(&self, mem: &mem::Mem) -> FrameBuffer {
-        let mut color_idx_buf = [[0u8; SCREEN_WIDTH as usize]; SCREEN_HEIGHT as usize];
-        let mut frame_buf = [[[0u8; 3]; SCREEN_WIDTH as usize]; SCREEN_HEIGHT as usize];
+    fn gen_line(&mut self, mem: &mem::Mem) {
+        let mut color_idx_buf = [0u8; SCREEN_WIDTH as usize];
+        self.frame_buf[self.cur_row_num as usize] = [[0u8; 3]; SCREEN_WIDTH as usize];
+        let row = self.cur_row_num;
 
-        {
+        // TODO: Handle different cases for gbc
+        if self.bg_display {
             // Write background
             let scy = mem.read_reg(mem::RegAddr::SCY);
             let scx = mem.read_reg(mem::RegAddr::SCX);
 
             let tile_map_addr = self.bg_tile_map_select as u16;
 
-            for row in 0..SCREEN_HEIGHT {
-                for col in 0..SCREEN_WIDTH {
-                    let bg_x = scx.overflowing_add(col).0;
-                    let bg_y = scy.overflowing_add(row).0;
-                    let color_idx = self.gen_color_idx(mem, tile_map_addr, bg_x, bg_y);
-                    color_idx_buf[row as usize][col as usize] = color_idx;
-                    frame_buf[row as usize][col as usize] =
-                        self.gen_pixel_color(mem, mem::RegAddr::BGP, color_idx);
-                }
+            for col in 0..SCREEN_WIDTH {
+                let bg_x = scx.overflowing_add(col).0;
+                let bg_y = scy.overflowing_add(row).0;
+                let color_idx = self.gen_color_idx(mem, tile_map_addr, bg_x, bg_y);
+                color_idx_buf[col as usize] = color_idx;
+                self.frame_buf[row as usize][col as usize] =
+                    self.gen_pixel_color(mem, mem::RegAddr::BGP, color_idx);
             }
         }
 
-        {
+        if self.window_display_enable {
             // Write window
             let wy = mem.read_reg(mem::RegAddr::WY);
             let wx = mem.read_reg(mem::RegAddr::WX);
 
             let tile_map_addr = self.window_tile_map_select as u16;
 
-            for row in 0..SCREEN_HEIGHT {
-                for col in 0..SCREEN_WIDTH {
-                    if row < wy || col + 7 < wx {
-                        // Do nothing if we're off the window
-                        continue;
-                    }
-
-                    let win_x = col + 7 - wx;
-                    let win_y = row - wy;
-
-                    let color_idx = self.gen_color_idx(mem, tile_map_addr, win_x, win_y);
-                    color_idx_buf[row as usize][col as usize] = color_idx;
-                    frame_buf[row as usize][col as usize] =
-                        self.gen_pixel_color(mem, mem::RegAddr::BGP, color_idx);
+            for col in 0..SCREEN_WIDTH {
+                if row < wy || col + 7 < wx {
+                    // Do nothing if we're off the window
+                    continue;
                 }
+
+                let win_x = col + 7 - wx;
+                let win_y = row - wy;
+
+                let color_idx = self.gen_color_idx(mem, tile_map_addr, win_x, win_y);
+                color_idx_buf[col as usize] = color_idx;
+                self.frame_buf[row as usize][col as usize] =
+                    self.gen_pixel_color(mem, mem::RegAddr::BGP, color_idx);
             }
         }
 
-        {
+        if self.obj_enable {
             // Write sprites
             const OAM_START: u16 = 0xfe00;
             const OAM_END: u16 = 0xfe00;
@@ -361,8 +368,13 @@ impl Lcd {
                         let screen_x = pos_x - 8 + col;
                         let screen_y = pos_y - 8 + row;
 
+                        // Only write on the current row
+                        if screen_y != self.cur_row_num {
+                            continue;
+                        }
+
                         let above_bg = flags & 0x80 == 0;
-                        let bg_idx = color_idx_buf[screen_y as usize][screen_x as usize];
+                        let bg_idx = color_idx_buf[screen_x as usize];
 
                         // Do nothing if we are behind the background
                         if bg_idx != 0 && !above_bg {
@@ -389,7 +401,7 @@ impl Lcd {
                             mem::RegAddr::OBP1
                         };
 
-                        frame_buf[screen_y as usize][screen_x as usize] =
+                        self.frame_buf[screen_y as usize][screen_x as usize] =
                             self.gen_pixel_color(mem, pallet_addr, color_idx);
 
                         // TODO Handle GBC Tile VRAM-Bank
@@ -400,7 +412,5 @@ impl Lcd {
                 cur_sprite += SPRITE_SIZE;
             }
         }
-
-        frame_buf
     }
 }
