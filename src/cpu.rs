@@ -10,7 +10,7 @@ pub enum Interrupt {
 }
 
 #[derive(Copy, Clone)]
-struct Regs {
+pub struct Regs {
     af: u16,
     bc: u16,
     de: u16,
@@ -198,6 +198,14 @@ impl Regs {
 }
 
 impl Cpu {
+    pub fn regs(&self) -> Regs {
+        self.regs
+    }
+
+    pub fn set_regs(&mut self, regs: Regs) {
+        self.regs = regs;
+    }
+
     pub fn on_clock(&mut self, mem: &mut mem::Mem) {
         match self.inst_cycles {
             0 => {

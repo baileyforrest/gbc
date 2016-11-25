@@ -1,3 +1,6 @@
+use std::fmt;
+use std::io::Read;
+
 mod cpu;
 mod dma;
 mod joypad;
@@ -6,8 +9,20 @@ mod mem;
 mod sound;
 mod timer;
 
+pub enum GbcErr {
+    Cartridge(mem::CartErr),
+}
+
+impl fmt::Display for GbcErr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &GbcErr::Cartridge(ref e) => write!(f, "Cartridge error: {}", e),
+        }
+    }
+}
+
 #[derive(Default)]
-struct Gbc {
+pub struct Gbc {
     cpu: cpu::Cpu,
     dma: dma::Dma,
     mem: mem::Mem,
@@ -18,12 +33,36 @@ struct Gbc {
 }
 
 impl Gbc {
-    fn on_clock(&mut self) {
+    pub fn cpu_regs(&self) -> cpu::Regs {
+        self.cpu.regs()
+    }
+
+    pub fn set_cpu_regs(&mut self, regs: cpu::Regs) {
+        self.cpu.set_regs(regs);
+    }
+
+    pub fn mem_val(&self, addr: u16) -> u8 {
+        self.mem.read(addr)
+    }
+
+    pub fn set_mem_val(&mut self, addr: u16, val: u8) {
+        self.mem.write(addr, val);
+    }
+
+    pub fn get_frame_buffer(&self) -> &lcd::FrameBuffer {
+        self.lcd.get_frame_buffer()
+    }
+
+    pub fn on_clock(&mut self) {
         self.cpu.on_clock(&mut self.mem);
         self.lcd.on_clock(&mut self.mem);
         self.timer.on_clock(&mut self.mem);
         self.joypad.on_clock(&mut self.mem);
         self.dma.on_clock(&mut self.mem);
+    }
+
+    pub fn load_rom(&mut self, rom: &mut Read) -> Result<(), GbcErr> {
+        Ok(self.mem.load_cartridge(rom).map_err(GbcErr::Cartridge)?)
     }
 }
 

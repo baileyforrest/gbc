@@ -1,4 +1,5 @@
-use std;
+use std::fmt;
+use std::io::{self, Read};
 
 use cpu;
 
@@ -91,9 +92,21 @@ pub struct Mem {
 
 #[derive(Debug)]
 pub enum CartErr {
-    Io(std::io::Error),
+    Io(io::Error),
     Length(usize, String),
     Invalid(String),
+}
+
+impl fmt::Display for CartErr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            &CartErr::Io(ref e) => write!(f, "IO error: {}", e),
+            &CartErr::Length(ref size, ref msg) => {
+                write!(f, "Length error: {}. Size: {}", msg, size)
+            }
+            &CartErr::Invalid(ref msg) => write!(f, "Invalid input: {}", msg),
+        }
+    }
 }
 
 impl Default for Cartridge {
@@ -156,7 +169,7 @@ impl Default for Mem {
     }
 }
 
-fn read_bank(rom: &mut std::io::Read) -> Result<[u8; 0x4000], CartErr> {
+fn read_bank(rom: &mut Read) -> Result<[u8; 0x4000], CartErr> {
     let mut buf = [0u8; 0x4000];
     let len = rom.read(&mut buf).map_err(CartErr::Io)?;
     if len != buf.len() {
@@ -218,7 +231,7 @@ impl Cartridge {
         }
     }
 
-    pub fn load(&mut self, rom: &mut std::io::Read) -> Result<(), CartErr> {
+    pub fn load(&mut self, rom: &mut Read) -> Result<(), CartErr> {
         let bank0 = read_bank(rom)?;
 
         // TODO: Handle 0143 - CGB Flag
@@ -377,7 +390,7 @@ impl Mem {
         val & mask != 0
     }
 
-    pub fn load_cartridge(&mut self, rom: &mut std::io::Read) -> Result<(), CartErr> {
+    pub fn load_cartridge(&mut self, rom: &mut Read) -> Result<(), CartErr> {
         self.cartridge.load(rom)
     }
 }
