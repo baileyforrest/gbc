@@ -60,6 +60,7 @@ pub enum RegAddr {
     SCY = 0xff42,
     SCX = 0xff43,
     LYC = 0xff45,
+    DMA = 0xff46,
     BGP = 0xff47,
     OBP0 = 0xff48,
     OBP1 = 0xff49,

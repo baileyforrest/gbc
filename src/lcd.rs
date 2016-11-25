@@ -1,16 +1,25 @@
 use cpu;
 use mem;
 
+const SCREEN_WIDTH: u8 = 160;
+const SCREEN_HEIGHT: u8 = 144;
+const TILE_SIZE: u16 = 16;
+
+pub type FrameBuffer = [[[u8; 3]; SCREEN_WIDTH as usize]; SCREEN_HEIGHT as usize];
+
+#[derive(Copy, Clone)]
 enum TileMapSelect {
     A9800 = 0x9800,
     A9c00 = 0x9c00,
 }
 
+#[derive(Copy, Clone)]
 enum TileSelectData {
     A8800 = 0x8800,
     A8000 = 0x8000,
 }
 
+#[derive(Copy, Clone, PartialEq)]
 enum ObjSize {
     S8x8,
     S8x16,
@@ -208,5 +217,190 @@ impl Lcd {
 
         let new_status = status & !0x7u8 | (self.lyc_eq_ly as u8) << 2 | self.mode as u8;
         mem.write(LCD_STATUS_ADDR, new_status);
+    }
+
+    fn get_tile_addr(&self, idx: u8) -> u16 {
+        match self.tile_select_data {
+            TileSelectData::A8800 => TileSelectData::A8800 as u16 + idx as u16,
+            TileSelectData::A8000 => {
+                const BASE_ADDR: u16 = 0x9000;
+                if idx & 0x80 == 0 {
+                    BASE_ADDR + idx as u16
+                } else {
+                    let abs = !(idx as u16) + 1; // 2's complement
+                    BASE_ADDR - abs
+                }
+            }
+        }
+    }
+
+    fn gen_pixel_color(&self, mem: &mem::Mem, reg_addr: mem::RegAddr, color_idx: u8) -> [u8; 3] {
+        let bgp = mem.read_reg(reg_addr);
+        assert!(color_idx < 4);
+        let shade = (bgp >> (color_idx * 2)) & 0x3;
+
+        // TODO: Return RGB value
+        // TODO: Support GBC colors
+        [shade; 3]
+    }
+
+    fn gen_tile_color_idx(&self,
+                          mem: &mem::Mem,
+                          tile_base_addr: u16,
+                          tile_x: u8,
+                          tile_y: u8)
+                          -> u8 {
+        assert!(tile_x < 8 && tile_y < 8);
+
+        let tile_byte_upper = mem.read(tile_base_addr + tile_y as u16 * 2);
+        let tile_byte_lower = mem.read(tile_base_addr + tile_y as u16 * 2 + 1);
+
+        let upper_bit = tile_byte_upper >> (7 - tile_x);
+        let lower_bit = tile_byte_lower >> (7 - tile_x);
+        let color_idx = upper_bit << 1 | lower_bit;
+
+        color_idx
+    }
+
+    fn gen_color_idx(&self, mem: &mem::Mem, tile_map_addr: u16, map_x: u8, map_y: u8) -> u8 {
+        let map_tile_x = (map_x + 7) / 8;
+        let map_tile_y = (map_y + 7) / 8;
+
+        let map_idx = map_tile_y as u16 * 32 + map_tile_x as u16;
+        let map_addr = tile_map_addr + map_idx;
+        let tile_idx = mem.read(map_addr);
+        let tile_base_addr = self.get_tile_addr(tile_idx);
+
+        let tile_x = map_x & 0x7;
+        let tile_y = map_y & 0x7;
+
+        self.gen_tile_color_idx(mem, tile_base_addr, tile_x, tile_y)
+    }
+
+    fn gen_screen(&self, mem: &mem::Mem) -> FrameBuffer {
+        let mut color_idx_buf = [[0u8; SCREEN_WIDTH as usize]; SCREEN_HEIGHT as usize];
+        let mut frame_buf = [[[0u8; 3]; SCREEN_WIDTH as usize]; SCREEN_HEIGHT as usize];
+
+        {
+            // Write background
+            let scy = mem.read_reg(mem::RegAddr::SCY);
+            let scx = mem.read_reg(mem::RegAddr::SCX);
+
+            let tile_map_addr = self.bg_tile_map_select as u16;
+
+            for row in 0..SCREEN_HEIGHT {
+                for col in 0..SCREEN_WIDTH {
+                    let bg_x = scx.overflowing_add(col).0;
+                    let bg_y = scy.overflowing_add(row).0;
+                    let color_idx = self.gen_color_idx(mem, tile_map_addr, bg_x, bg_y);
+                    color_idx_buf[row as usize][col as usize] = color_idx;
+                    frame_buf[row as usize][col as usize] =
+                        self.gen_pixel_color(mem, mem::RegAddr::BGP, color_idx);
+                }
+            }
+        }
+
+        {
+            // Write window
+            let wy = mem.read_reg(mem::RegAddr::WY);
+            let wx = mem.read_reg(mem::RegAddr::WX);
+
+            let tile_map_addr = self.window_tile_map_select as u16;
+
+            for row in 0..SCREEN_HEIGHT {
+                for col in 0..SCREEN_WIDTH {
+                    if row < wy || col + 7 < wx {
+                        // Do nothing if we're off the window
+                        continue;
+                    }
+
+                    let win_x = col + 7 - wx;
+                    let win_y = row - wy;
+
+                    let color_idx = self.gen_color_idx(mem, tile_map_addr, win_x, win_y);
+                    color_idx_buf[row as usize][col as usize] = color_idx;
+                    frame_buf[row as usize][col as usize] =
+                        self.gen_pixel_color(mem, mem::RegAddr::BGP, color_idx);
+                }
+            }
+        }
+
+        {
+            // Write sprites
+            const OAM_START: u16 = 0xfe00;
+            const OAM_END: u16 = 0xfe00;
+            const SPRITE_SIZE: u16 = 4;
+            const TILE_MAP_ADDR: u16 = 0x8000;
+
+            let mut cur_sprite = OAM_START;
+
+            while cur_sprite <= OAM_END {
+                let pos_y = mem.read(cur_sprite);
+                let pos_x = mem.read(cur_sprite + 1);
+                let mut tile_idx = mem.read(cur_sprite + 2) as u16;
+                let flags = mem.read(cur_sprite + 3);
+
+                if self.obj_size == ObjSize::S8x16 {
+                    tile_idx &= 0xfe;
+                }
+
+                let tile_addr = TILE_MAP_ADDR + tile_idx * TILE_SIZE;
+
+                for row in 0..16 {
+                    for col in 0..8 {
+                        if row >= 8 && self.obj_size == ObjSize::S8x8 {
+                            continue;
+                        }
+
+                        // Do nothing if the sprite is off the screen
+                        if pos_x >= SCREEN_WIDTH + 8 || pos_x + col < 8 ||
+                           pos_y >= SCREEN_HEIGHT + 16 ||
+                           pos_y + row < 16 {
+                            continue;
+                        }
+                        let screen_x = pos_x - 8 + col;
+                        let screen_y = pos_y - 8 + row;
+
+                        let above_bg = flags & 0x80 == 0;
+                        let bg_idx = color_idx_buf[screen_y as usize][screen_x as usize];
+
+                        // Do nothing if we are behind the background
+                        if bg_idx != 0 && !above_bg {
+                            continue;
+                        }
+
+                        let flip_x = flags & 0x20 != 0;
+                        let flip_y = flags & 0x40 != 0;
+
+                        // TODO: For 8x16, do the tile orders swap too?
+                        let flipped_col = if flip_x { 7 - col } else { col };
+                        let flipped_row = if flip_y { 7 - row } else { row };
+
+                        let color_idx = if row >= 8 {
+                            let lower_tile_addr = tile_addr + TILE_SIZE;
+                            self.gen_tile_color_idx(mem, lower_tile_addr, flipped_col, flipped_row)
+                        } else {
+                            self.gen_tile_color_idx(mem, tile_addr, flipped_col, flipped_row)
+                        };
+
+                        let pallet_addr = if flags & 0x10 == 0 {
+                            mem::RegAddr::OBP0
+                        } else {
+                            mem::RegAddr::OBP1
+                        };
+
+                        frame_buf[screen_y as usize][screen_x as usize] =
+                            self.gen_pixel_color(mem, pallet_addr, color_idx);
+
+                        // TODO Handle GBC Tile VRAM-Bank
+                        // TODO Handle GBC Palette number
+                    }
+                }
+
+                cur_sprite += SPRITE_SIZE;
+            }
+        }
+
+        frame_buf
     }
 }
