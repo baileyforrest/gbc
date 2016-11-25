@@ -2,8 +2,9 @@ use std;
 
 use cpu;
 
-const INTERRUPT_ENABLE_ADDR: u16 = 0xffff;
-const INTERRUPT_FLAG_ADDR: u16 = 0xff0f;
+// TODO: Enable speed switch for gbc
+
+const HIGH_RAM_BASE: u16 = 0xfe00;
 
 #[derive(Copy, Clone, PartialEq)]
 enum MbcType {
@@ -28,6 +29,42 @@ struct Cartridge {
     cur_rom_or_ram_bank: u8,
     ext_ram_enabled: bool,
     rom_bank_mode: bool,
+}
+
+pub enum RegAddr {
+    DIV = 0xff04,
+    TIMA = 0xff05,
+    TMA = 0xff06,
+    TAC = 0xff07,
+    IF = 0xff0f,
+    NR10 = 0xff10,
+    NR11 = 0xff11,
+    NR12 = 0xff12,
+    NR14 = 0xff14,
+    NR21 = 0xff16,
+    NR22 = 0xff17,
+    NR24 = 0xff19,
+    NR30 = 0xff1a,
+    NR31 = 0xff1b,
+    NR32 = 0xff1c,
+    NR33 = 0xff1e,
+    NR41 = 0xff20,
+    NR42 = 0xff21,
+    NR43 = 0xff22,
+    NR44 = 0xff23,
+    NR50 = 0xff24,
+    NR51 = 0xff25,
+    NR52 = 0xff26,
+    LCDC = 0xff40,
+    SCY = 0xff42,
+    SCX = 0xff43,
+    LYC = 0xff45,
+    BGP = 0xff47,
+    OBP0 = 0xff48,
+    OBP1 = 0xff49,
+    WY = 0xff4a,
+    WX = 0xff4b,
+    IE = 0xffff,
 }
 
 pub struct Mem {
@@ -74,12 +111,46 @@ impl Default for Cartridge {
 
 impl Default for Mem {
     fn default() -> Mem {
-        Mem {
+        let mut val = Mem {
             cartridge: Default::default(),
             vram: [[0; 0x4000]; 2],
             work_ram: [[0; 0x1000]; 8],
             high_ram: [0; 0x200],
-        }
+        };
+
+        val.high_ram[RegAddr::TIMA as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::TMA as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::TAC as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::NR10 as usize - HIGH_RAM_BASE as usize] = 0x80;
+        val.high_ram[RegAddr::NR11 as usize - HIGH_RAM_BASE as usize] = 0xbf;
+        val.high_ram[RegAddr::NR12 as usize - HIGH_RAM_BASE as usize] = 0xf3;
+        val.high_ram[RegAddr::NR14 as usize - HIGH_RAM_BASE as usize] = 0xbf;
+        val.high_ram[RegAddr::NR21 as usize - HIGH_RAM_BASE as usize] = 0x3f;
+        val.high_ram[RegAddr::NR22 as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::NR24 as usize - HIGH_RAM_BASE as usize] = 0xbf;
+        val.high_ram[RegAddr::NR30 as usize - HIGH_RAM_BASE as usize] = 0x7f;
+        val.high_ram[RegAddr::NR31 as usize - HIGH_RAM_BASE as usize] = 0xff;
+        val.high_ram[RegAddr::NR32 as usize - HIGH_RAM_BASE as usize] = 0x9f;
+        val.high_ram[RegAddr::NR33 as usize - HIGH_RAM_BASE as usize] = 0xbf;
+        val.high_ram[RegAddr::NR41 as usize - HIGH_RAM_BASE as usize] = 0xff;
+        val.high_ram[RegAddr::NR42 as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::NR43 as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::NR44 as usize - HIGH_RAM_BASE as usize] = 0xbf;
+        val.high_ram[RegAddr::NR50 as usize - HIGH_RAM_BASE as usize] = 0x77;
+        val.high_ram[RegAddr::NR51 as usize - HIGH_RAM_BASE as usize] = 0xf3;
+        val.high_ram[RegAddr::NR52 as usize - HIGH_RAM_BASE as usize] = 0xf1;
+        val.high_ram[RegAddr::LCDC as usize - HIGH_RAM_BASE as usize] = 0x91;
+        val.high_ram[RegAddr::SCY as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::SCX as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::LYC as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::BGP as usize - HIGH_RAM_BASE as usize] = 0xfc;
+        val.high_ram[RegAddr::OBP0 as usize - HIGH_RAM_BASE as usize] = 0xff;
+        val.high_ram[RegAddr::OBP1 as usize - HIGH_RAM_BASE as usize] = 0xff;
+        val.high_ram[RegAddr::WY as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::WX as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::IE as usize - HIGH_RAM_BASE as usize] = 0x00;
+
+        val
     }
 }
 
@@ -252,34 +323,50 @@ impl Mem {
                 self.work_ram[idx as usize][addr as usize - 0xd000] = val;
             }
             0xe000...0xfdff => self.write(addr - 0x2000, val),
-            0xfe00...0xffff => self.high_ram[addr as usize - 0xfe00] = val,
+            0xfe00...0xffff => {
+                let mut write_val = val;
+                // Handle special rules
+                if addr == RegAddr::DIV as u16 {
+                    write_val = 0;
+                }
+
+                self.high_ram[addr as usize - 0xfe00] = write_val;
+            }
             _ => panic!("Impossible"),
         }
     }
 
+    pub fn read_reg(&self, reg: RegAddr) -> u8 {
+        self.high_ram[reg as usize - HIGH_RAM_BASE as usize]
+    }
+
+    pub fn write_reg(&mut self, reg: RegAddr, val: u8) {
+        self.high_ram[reg as usize - HIGH_RAM_BASE as usize] = val;
+    }
+
     pub fn set_interrupt_en(&mut self, intr: cpu::Interrupt, set: bool) {
         let mask = 1u8 << interrupt_bit(intr);
-        let val = self.read(INTERRUPT_ENABLE_ADDR);
+        let val = self.read_reg(RegAddr::IE);
         let new_val = if set { val | mask } else { val & !mask };
-        self.write(INTERRUPT_ENABLE_ADDR, new_val);
+        self.write_reg(RegAddr::IE, new_val);
     }
 
     pub fn get_interrupt_en(&mut self, intr: cpu::Interrupt) -> bool {
         let mask = 1u8 << interrupt_bit(intr);
-        let val = self.read(INTERRUPT_ENABLE_ADDR);
+        let val = self.read_reg(RegAddr::IE);
         val & mask != 0
     }
 
     pub fn set_interrupt_flag(&mut self, intr: cpu::Interrupt, set: bool) {
         let mask = 1u8 << interrupt_bit(intr);
-        let val = self.read(INTERRUPT_FLAG_ADDR);
+        let val = self.read_reg(RegAddr::IF);
         let new_val = if set { val | mask } else { val & !mask };
-        self.write(INTERRUPT_FLAG_ADDR, new_val);
+        self.write_reg(RegAddr::IF, new_val);
     }
 
     pub fn get_interrupt_flag(&mut self, intr: cpu::Interrupt) -> bool {
         let mask = 1u8 << interrupt_bit(intr);
-        let val = self.read(INTERRUPT_FLAG_ADDR);
+        let val = self.read(RegAddr::IF as u16);
         val & mask != 0
     }
 

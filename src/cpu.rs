@@ -1,9 +1,6 @@
 use mem;
 
-const DEFAULT_PC: u16 = 0x100;
-const DEFAULT_SP: u16 = 0xfffe;
-
-// TODO: support interrupts.
+#[derive(Copy, Clone)]
 pub enum Interrupt {
     Vblank = 0x40,
     LcdStatus = 0x48,
@@ -12,7 +9,7 @@ pub enum Interrupt {
     Joypad = 0x60,
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Copy, Clone)]
 struct Regs {
     af: u16,
     bc: u16,
@@ -38,6 +35,7 @@ struct NextStateGen<'a> {
     ns: Box<NextState>,
 }
 
+#[derive(Default)]
 pub struct Cpu {
     regs: Regs,
     inst_cycles: u8, // Cycles remaining in current instruction.
@@ -107,6 +105,22 @@ fn rp_idx_to_r16(idx: u8) -> Reg16 {
         2 => Reg16::HL,
         3 => Reg16::SP,
         _ => panic!("Invalid index"),
+    }
+}
+
+impl Default for Regs {
+    fn default() -> Regs {
+        Regs {
+            af: 0x11B0,
+            bc: 0x0013,
+            de: 0x00D8,
+            hl: 0x014d,
+            sp: 0xfffe,
+            pc: 0x0100,
+            enable_interrupts: false,
+            halted: false,
+            stopped: false,
+        }
     }
 }
 
@@ -183,21 +197,6 @@ impl Regs {
     }
 }
 
-impl Default for Cpu {
-    fn default() -> Cpu {
-        Cpu {
-            regs: Regs {
-                sp: DEFAULT_SP,
-                pc: DEFAULT_PC,
-                ..Default::default()
-            },
-            inst_cycles: 0,
-            next_state: None,
-        }
-
-    }
-}
-
 impl Cpu {
     pub fn on_clock(&mut self, mem: &mut mem::Mem) {
         match self.inst_cycles {
@@ -209,6 +208,49 @@ impl Cpu {
                     for &(addr, val) in &next_state.mem_writes {
                         mem.write(addr, val);
                     }
+                }
+
+                if self.regs.enable_interrupts {
+                    for &intr in [Interrupt::Vblank,
+                                  Interrupt::LcdStatus,
+                                  Interrupt::Timer,
+                                  Interrupt::Serial,
+                                  Interrupt::Joypad]
+                        .iter() {
+                        if !mem.get_interrupt_en(intr) || !mem.get_interrupt_flag(intr) {
+                            continue;
+                        }
+
+                        self.regs.halted = false;
+
+                        // Process interrupt
+                        mem.set_interrupt_flag(intr, false);
+                        self.regs.enable_interrupts = false;
+
+                        let next_state = {
+                            let mut nsg = NextStateGen {
+                                cpu: self,
+                                mem: mem,
+                                ns: Default::default(),
+                            };
+                            nsg.generate_interrupt(intr);
+                            nsg.ns
+                        };
+                        self.inst_cycles = next_state.cycles - 1;
+                        self.next_state = Some(next_state);
+                        return;
+                    }
+                }
+
+                // TODO: sleep screen. Wake when button pressed
+                if self.regs.stopped {
+                    self.next_state = None;
+                    return;
+                }
+
+                if self.regs.halted {
+                    self.next_state = None;
+                    return;
                 }
 
                 // Generate next state
@@ -420,6 +462,12 @@ impl<'a> NextStateGen<'a> {
             }
             _ => panic!("Impossible"),
         }
+    }
+
+    fn generate_interrupt(&mut self, intr: Interrupt) {
+        self.ns.cycles = 4;
+        let cur_pc = self.cpu.regs.pc;
+        self.call(intr as u16, cur_pc);
     }
 
     fn generate(&mut self) {
