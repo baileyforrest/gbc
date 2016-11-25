@@ -1,4 +1,5 @@
 mod cpu;
+mod joypad;
 mod lcd;
 mod mem;
 mod timer;
@@ -9,6 +10,7 @@ struct Gbc {
     mem: mem::Mem,
     lcd: lcd::Lcd,
     timer: timer::Timer,
+    joypad: joypad::Joypad,
 }
 
 impl Gbc {
@@ -16,6 +18,7 @@ impl Gbc {
         self.cpu.on_clock(&mut self.mem);
         self.lcd.on_clock(&mut self.mem);
         self.timer.on_clock(&mut self.mem);
+        self.joypad.on_clock(&mut self.mem);
     }
 }
 

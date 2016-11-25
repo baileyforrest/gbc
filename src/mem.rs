@@ -32,6 +32,7 @@ struct Cartridge {
 }
 
 pub enum RegAddr {
+    P1 = 0xff00,
     DIV = 0xff04,
     TIMA = 0xff05,
     TMA = 0xff06,
@@ -328,6 +329,11 @@ impl Mem {
                 // Handle special rules
                 if addr == RegAddr::DIV as u16 {
                     write_val = 0;
+                } else if addr == RegAddr::P1 as u16 {
+                    let cur_val = self.read(RegAddr::P1 as u16);
+                    let mask = 0x30;
+
+                    write_val = val & mask | cur_val & !mask;
                 }
 
                 self.high_ram[addr as usize - 0xfe00] = write_val;
