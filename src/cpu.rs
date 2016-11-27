@@ -331,14 +331,14 @@ impl<'a> NextStateGen<'a> {
     }
 
     fn pop(&mut self) -> u16 {
-        self.ns.regs.sp = self.cpu.regs.sp + 2;
+        self.ns.regs.sp = self.cpu.regs.sp.overflowing_add(2).0;
         self.mem.read(self.cpu.regs.sp) as u16 | (self.mem.read(self.cpu.regs.sp + 1) as u16) << 8
     }
 
     fn push(&mut self, val: u16) {
-        self.ns.regs.sp = self.cpu.regs.sp - 2;
-        self.ns.mem_writes.push((self.cpu.regs.sp - 1, (val >> 8) as u8));
-        self.ns.mem_writes.push((self.cpu.regs.sp - 2, val as u8));
+        self.ns.regs.sp = self.cpu.regs.sp.overflowing_sub(2).0;
+        self.ns.mem_writes.push((self.cpu.regs.sp.overflowing_sub(1).0, (val >> 8) as u8));
+        self.ns.mem_writes.push((self.cpu.regs.sp.overflowing_sub(2).0, val as u8));
     }
 
     fn ret(&mut self) {
@@ -673,15 +673,15 @@ impl<'a> NextStateGen<'a> {
                         let new_val;
                         if z == 4 {
                             // INC r[y]
-                            new_val = val + 1;
+                            new_val = val.overflowing_add(1).0;
                             self.ns.regs.set_flag(FlagType::N, false);
                         } else {
                             // DEC r[y]
-                            new_val = val - 1;
+                            new_val = val.overflowing_sub(1).0;
                             self.ns.regs.set_flag(FlagType::N, true);
                         }
 
-                        self.set_reg8(reg, val);
+                        self.set_reg8(reg, new_val);
                         self.ns.regs.set_flag(FlagType::Z, new_val == 0);
 
                         // Half carry occured if 4th bit changed.

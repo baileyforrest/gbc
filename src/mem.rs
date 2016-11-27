@@ -201,7 +201,7 @@ impl Cartridge {
                             _ => base_idx,
                         };
 
-                        self.rom[self.cur_rom_bank as usize][real_idx as usize - 0x4000]
+                        self.rom[real_idx as usize][addr as usize - 0x4000]
                     }
                     _ => self.rom[self.cur_rom_bank as usize][addr as usize - 0x4000],
                 }

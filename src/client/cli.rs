@@ -211,7 +211,9 @@ impl Cmd for CmdRun {
             if regs.pc == addr {
                 break;
             }
-            println!("{}", regs);
+
+            // TODO: Remove
+            // println!("{}", regs);
             gbc.step_instruction();
         }
 

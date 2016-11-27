@@ -145,11 +145,8 @@ impl Lcd {
     fn process_state(&mut self, mem: &mut mem::Mem) {
         if self.mode == LcdMode::Vblank {
             // TODO: Consolidate ly logic into one place.
-            // TODO: Handle writing to LY
             if self.mode_cycles >= 1 && (self.mode_cycles - 1) % LY_CYCLES == 0 {
-                self.ly += 1;
-                // FF44 - LY - LCDC Y-Coordinate (R)
-                mem.write_reg(mem::RegAddr::LY, self.ly);
+                self.inc_ly(mem);
             }
         }
 
@@ -158,36 +155,25 @@ impl Lcd {
             return;
         }
 
-        if self.mode == LcdMode::LcdTransfer {
-            // FF44 - LY - LCDC Y-Coordinate (R)
-            mem.write_reg(mem::RegAddr::LY, self.ly);
-
-            // FF45 - LYC - LY Compare (R/W)
-            let lyc = mem.read_reg(mem::RegAddr::LYC);
-            self.lyc_eq_ly = self.ly == lyc;
-
-            if self.lyc_eq_ly && self.int_en_lyc_eq_ly {
-                mem.set_interrupt_flag(cpu::Interrupt::LcdStatus, true);
-            }
-
-            self.gen_line(mem);
-        }
+        // Perform end of state actions.
+        match self.mode {
+            LcdMode::LcdTransfer => self.gen_line(mem),
+            LcdMode::Hblank => self.inc_ly(mem),
+            LcdMode::Vblank => self.ly = 0,
+            _ => (),
+        };
 
         self.mode = match self.mode {
             LcdMode::SearchOam => LcdMode::LcdTransfer,
             LcdMode::LcdTransfer => LcdMode::Hblank,
             LcdMode::Hblank => {
-                self.ly += 1;
                 if self.ly == SCREEN_HEIGHT {
                     LcdMode::Vblank
                 } else {
                     LcdMode::SearchOam
                 }
             }
-            LcdMode::Vblank => {
-                self.ly = 0;
-                LcdMode::SearchOam
-            }
+            LcdMode::Vblank => LcdMode::SearchOam,
         };
 
         self.mode_cycles = match self.mode {
@@ -285,8 +271,8 @@ impl Lcd {
     }
 
     fn gen_color_idx(&self, mem: &mem::Mem, tile_map_addr: u16, map_x: u8, map_y: u8) -> u8 {
-        let map_tile_x = (map_x + 7) / 8;
-        let map_tile_y = (map_y + 7) / 8;
+        let map_tile_x = ((map_x as u16 + 7) / 8) as u8;
+        let map_tile_y = ((map_y as u16 + 7) / 8) as u8;
 
         let map_idx = map_tile_y as u16 * 32 + map_tile_x as u16;
         let map_addr = tile_map_addr + map_idx;
@@ -426,6 +412,40 @@ impl Lcd {
 
                 cur_sprite += SPRITE_SIZE;
             }
+        }
+
+        // TODO remove
+        // if self.ly == SCREEN_HEIGHT - 1 {
+        //    println!("FRAME START");
+
+        //    let mut row = 0;
+        //    while row < SCREEN_HEIGHT {
+        //        let mut col = 0;
+        //        while col < SCREEN_WIDTH {
+        //            print!("{} ", self.frame_buf[row as usize][col as usize][0]);
+        //            col += 1;
+        //        }
+        //        println!("");
+
+        //        row += 1;
+        //    }
+        //    println!("FRAME END");
+        //
+    }
+
+    // TODO: Handle writing to LY
+    fn inc_ly(&mut self, mem: &mut mem::Mem) {
+        self.ly += 1;
+
+        // FF44 - LY - LCDC Y-Coordinate (R)
+        mem.write_reg(mem::RegAddr::LY, self.ly);
+
+        // FF45 - LYC - LY Compare (R/W)
+        let lyc = mem.read_reg(mem::RegAddr::LYC);
+        self.lyc_eq_ly = self.ly == lyc;
+
+        if self.lyc_eq_ly && self.int_en_lyc_eq_ly {
+            mem.set_interrupt_flag(cpu::Interrupt::LcdStatus, true);
         }
     }
 }
