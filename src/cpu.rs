@@ -153,7 +153,7 @@ impl Regs {
 
     fn set16(&mut self, rt: Reg16, val: u16) {
         match rt {
-            Reg16::AF => self.af = val,
+            Reg16::AF => self.af = val & 0xfff0, // Lower four bits of F are always 0.
             Reg16::BC => self.bc = val,
             Reg16::DE => self.de = val,
             Reg16::HL => self.hl = val,
@@ -179,7 +179,7 @@ impl Regs {
     fn set8(&mut self, rt: Reg8, val: u8) {
         match rt {
             Reg8::A => u16_set_byte_high(&mut self.af, val),
-            Reg8::F => u16_set_byte_low(&mut self.af, val),
+            Reg8::F => u16_set_byte_low(&mut self.af, val & 0xf0), // Lower 4 bits always 0
             Reg8::B => u16_set_byte_high(&mut self.bc, val),
             Reg8::C => u16_set_byte_low(&mut self.bc, val),
             Reg8::D => u16_set_byte_high(&mut self.de, val),
@@ -191,7 +191,7 @@ impl Regs {
     }
 
     fn get_flag(&self, ft: FlagType) -> bool {
-        ((self.get8(Reg8::F) >> ft as u8) & 0x1) == 0
+        (self.get8(Reg8::F) & 1 << ft as u8) != 0
     }
 
     fn set_flag(&mut self, ft: FlagType, val: bool) {
@@ -396,7 +396,7 @@ impl<'a> NextStateGen<'a> {
         self.ns.regs.set_flag(FlagType::Z, new_val == 0);
         self.ns.regs.set_flag(FlagType::N, false);
         self.ns.regs.set_flag(FlagType::H, false);
-        self.ns.regs.set_flag(FlagType::C, val & 0x1 == 0);
+        self.ns.regs.set_flag(FlagType::C, val & 0x1 != 0);
         self.set_reg8(r, new_val);
     }
 
@@ -685,7 +685,7 @@ impl<'a> NextStateGen<'a> {
                         self.ns.regs.set_flag(FlagType::Z, new_val == 0);
 
                         // Half carry occured if 4th bit changed.
-                        let hc = val & !(1 << 4) != new_val & !(1 << 4);
+                        let hc = val & (1 << 4) != new_val & (1 << 4);
                         self.ns.regs.set_flag(FlagType::H, hc);
                     }
                     6 => {
@@ -718,21 +718,39 @@ impl<'a> NextStateGen<'a> {
                             }
                             4 => {
                                 // DAA
-                                let mut val = self.get_reg8(Reg8::A) as u16;
-                                let mut bcd: u16 = 0;
-                                let mut iters = 0;
-                                while val > 0 {
-                                    bcd |= (val % 10) & 0xf << iters;
+                                // See http://www.z80.info/z80syntx.htm#DAA
 
-                                    iters += 1;
-                                    val /= 10;
+                                let c_flag = self.cpu.regs.get_flag(FlagType::C);
+                                let h_flag = self.cpu.regs.get_flag(FlagType::H);
+                                let n_flag = self.cpu.regs.get_flag(FlagType::N);
+                                let a_val = self.get_reg8(Reg8::A);
+
+                                let mut new_a_val = a_val as i16;
+                                if n_flag {
+                                    if h_flag {
+                                        new_a_val = (new_a_val - 6) & 0xff;
+                                    }
+
+                                    if c_flag {
+                                        new_a_val -= 0x60;
+                                    }
+                                } else {
+                                    if h_flag || new_a_val & 0xf > 9 {
+                                        new_a_val += 0x6;
+                                    }
+
+                                    if c_flag || new_a_val > 0x9f {
+                                        new_a_val += 0x60;
+                                    }
                                 }
 
-                                let new_val = bcd as u8;
-                                self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+                                let a_val_u8 = new_a_val as u8;
+                                self.ns.regs.set_flag(FlagType::Z, a_val_u8 == 0);
                                 self.ns.regs.set_flag(FlagType::H, false);
-                                self.ns.regs.set_flag(FlagType::C, bcd > 0xff);
-                                self.set_reg8(Reg8::A, new_val);
+                                if new_a_val & 0x100 != 0 {
+                                    self.ns.regs.set_flag(FlagType::C, true);
+                                }
+                                self.set_reg8(Reg8::A, a_val_u8);
                             }
                             5 => {
                                 // CPL
@@ -1008,7 +1026,7 @@ impl<'a> NextStateGen<'a> {
                                                 self.ns.regs.set_flag(FlagType::H, false);
                                                 self.ns
                                                     .regs
-                                                    .set_flag(FlagType::C, new_val & (1 << 7) != 0);
+                                                    .set_flag(FlagType::C, val & 0x1 != 0);
                                             }
                                             6 => {
                                                 // SWAP
