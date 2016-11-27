@@ -64,6 +64,13 @@ impl Gbc {
     pub fn load_rom(&mut self, rom: &mut Read) -> Result<(), GbcErr> {
         Ok(self.mem.load_cartridge(rom).map_err(GbcErr::Cartridge)?)
     }
+
+    pub fn step_instruction(&mut self) {
+        while self.cpu.inst_cycles() != 0 {
+            self.on_clock();
+        }
+        self.on_clock();
+    }
 }
 
 pub fn run() {

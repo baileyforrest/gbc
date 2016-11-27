@@ -1,4 +1,5 @@
 use mem;
+use std::fmt;
 
 #[derive(Copy, Clone)]
 pub enum Interrupt {
@@ -11,15 +12,15 @@ pub enum Interrupt {
 
 #[derive(Copy, Clone)]
 pub struct Regs {
-    af: u16,
-    bc: u16,
-    de: u16,
-    hl: u16,
-    sp: u16,
-    pc: u16,
-    enable_interrupts: bool,
-    halted: bool,
-    stopped: bool,
+    pub af: u16,
+    pub bc: u16,
+    pub de: u16,
+    pub hl: u16,
+    pub sp: u16,
+    pub pc: u16,
+    pub enable_interrupts: bool,
+    pub halted: bool,
+    pub stopped: bool,
 }
 
 #[derive(Default)]
@@ -124,6 +125,20 @@ impl Default for Regs {
     }
 }
 
+impl fmt::Display for Regs {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "AF: 0x{:04x}\n", self.af)?;
+        write!(f, "BC: 0x{:04x}\n", self.bc)?;
+        write!(f, "DE: 0x{:04x}\n", self.de)?;
+        write!(f, "HL: 0x{:04x}\n", self.hl)?;
+        write!(f, "SP: 0x{:04x}\n", self.sp)?;
+        write!(f, "PC: 0x{:04x}\n", self.pc)?;
+        write!(f, "IME: {}\n", self.enable_interrupts)?;
+        write!(f, "HALT: {}\n", self.halted)?;
+        write!(f, "STOP: {}\n", self.stopped)
+    }
+}
+
 impl Regs {
     fn get16(&self, rt: Reg16) -> u16 {
         match rt {
@@ -204,6 +219,10 @@ impl Cpu {
 
     pub fn set_regs(&mut self, regs: Regs) {
         self.regs = regs;
+    }
+
+    pub fn inst_cycles(&self) -> u8 {
+        self.inst_cycles
     }
 
     pub fn on_clock(&mut self, mem: &mut mem::Mem) {
@@ -483,6 +502,8 @@ impl<'a> NextStateGen<'a> {
         // TODO: handle overflow overflowing_add
         // Remove extra {} when only match expression.
 
+        self.ns.regs = self.cpu.regs;
+
         // Uninitialized to ensure every instruction defines these.
         let cycles: u8;
         let size: u16;
@@ -524,14 +545,15 @@ impl<'a> NextStateGen<'a> {
                                 // y == 3: JR d
                                 // y > 3: JR cc[y-4], d
                                 size = 2;
-                                let cc_idx = y - 4;
 
-                                if y == 3 || self.cpu.regs.flag_idx_pass(cc_idx) {
+                                if y == 3 || self.cpu.regs.flag_idx_pass(y - 4) {
                                     cycles = 12;
-                                    let val = self.read_pc_val(1);
-                                    // TODO: is it pc before or after current instruction?
-                                    let next_pc = self.cpu.regs.get16(Reg16::PC) + val as u16;
-                                    self.ns.regs.set16(Reg16::PC, next_pc);
+                                    let val = self.read_pc_val(1) as i8;
+                                    let sign_pc = self.cpu.regs.get16(Reg16::PC) as i32;
+
+                                    // Add 2 to skip the current instruction.
+                                    let next_pc = sign_pc + 2 + val as i32;
+                                    self.ns.regs.set16(Reg16::PC, next_pc as u16);
                                 } else {
                                     cycles = 8;
                                 }
@@ -634,10 +656,10 @@ impl<'a> NextStateGen<'a> {
                         let val = self.cpu.regs.get16(reg);
                         let new_val = if q == 0 {
                             // INC rp[p]
-                            val + 1
+                            val.overflowing_add(1).0
                         } else {
                             // DEC rp[p]
-                            val - 1
+                            val.overflowing_sub(1).0
                         };
                         self.ns.regs.set16(reg, new_val);
                     }

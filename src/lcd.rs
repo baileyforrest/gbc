@@ -4,6 +4,7 @@ use mem;
 const SCREEN_WIDTH: u8 = 160;
 const SCREEN_HEIGHT: u8 = 144;
 const TILE_SIZE: u16 = 16;
+const LY_CYCLES: u16 = 456;
 
 pub type FrameBuffer = [[[u8; 3]; SCREEN_WIDTH as usize]; SCREEN_HEIGHT as usize];
 
@@ -50,8 +51,8 @@ pub struct Lcd {
 
     lyc_eq_ly: bool,
     mode: LcdMode,
-    mode_cycles: usize,
-    cur_row_num: u8,
+    mode_cycles: u16,
+    ly: u8,
 
     frame_buf: FrameBuffer,
 }
@@ -74,7 +75,7 @@ impl Default for Lcd {
             lyc_eq_ly: false,
             mode: LcdMode::Vblank,
             mode_cycles: 0,
-            cur_row_num: 0,
+            ly: 0,
             frame_buf: [[[0u8; 3]; SCREEN_WIDTH as usize]; SCREEN_HEIGHT as usize],
         }
     }
@@ -142,6 +143,16 @@ impl Lcd {
 
     // Process LCD state
     fn process_state(&mut self, mem: &mut mem::Mem) {
+        if self.mode == LcdMode::Vblank {
+            // TODO: Consolidate ly logic into one place.
+            // TODO: Handle writing to LY
+            if self.mode_cycles >= 1 && (self.mode_cycles - 1) % LY_CYCLES == 0 {
+                self.ly += 1;
+                // FF44 - LY - LCDC Y-Coordinate (R)
+                mem.write_reg(mem::RegAddr::LY, self.ly);
+            }
+        }
+
         if self.mode_cycles != 0 {
             self.mode_cycles -= 1;
             return;
@@ -149,11 +160,11 @@ impl Lcd {
 
         if self.mode == LcdMode::LcdTransfer {
             // FF44 - LY - LCDC Y-Coordinate (R)
-            mem.write(0xff44, self.cur_row_num);
+            mem.write_reg(mem::RegAddr::LY, self.ly);
 
             // FF45 - LYC - LY Compare (R/W)
-            let lyc = mem.read(0xff45);
-            self.lyc_eq_ly = self.cur_row_num == lyc;
+            let lyc = mem.read_reg(mem::RegAddr::LYC);
+            self.lyc_eq_ly = self.ly == lyc;
 
             if self.lyc_eq_ly && self.int_en_lyc_eq_ly {
                 mem.set_interrupt_flag(cpu::Interrupt::LcdStatus, true);
@@ -166,15 +177,17 @@ impl Lcd {
             LcdMode::SearchOam => LcdMode::LcdTransfer,
             LcdMode::LcdTransfer => LcdMode::Hblank,
             LcdMode::Hblank => {
-                self.cur_row_num += 1;
-                if self.cur_row_num == 154 {
-                    self.cur_row_num = 0;
+                self.ly += 1;
+                if self.ly == SCREEN_HEIGHT {
                     LcdMode::Vblank
                 } else {
                     LcdMode::SearchOam
                 }
             }
-            LcdMode::Vblank => LcdMode::SearchOam,
+            LcdMode::Vblank => {
+                self.ly = 0;
+                LcdMode::SearchOam
+            }
         };
 
         self.mode_cycles = match self.mode {
@@ -287,9 +300,11 @@ impl Lcd {
     }
 
     fn gen_line(&mut self, mem: &mem::Mem) {
+        assert!(self.ly < SCREEN_HEIGHT);
+
         let mut color_idx_buf = [0u8; SCREEN_WIDTH as usize];
-        self.frame_buf[self.cur_row_num as usize] = [[0u8; 3]; SCREEN_WIDTH as usize];
-        let row = self.cur_row_num;
+        self.frame_buf[self.ly as usize] = [[0u8; 3]; SCREEN_WIDTH as usize];
+        let row = self.ly;
 
         // TODO: Handle different cases for gbc
         if self.bg_display {
@@ -369,7 +384,7 @@ impl Lcd {
                         let screen_y = pos_y - 8 + row;
 
                         // Only write on the current row
-                        if screen_y != self.cur_row_num {
+                        if screen_y != self.ly {
                             continue;
                         }
 

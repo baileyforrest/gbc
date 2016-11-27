@@ -60,6 +60,7 @@ pub enum RegAddr {
     LCDC = 0xff40,
     SCY = 0xff42,
     SCX = 0xff43,
+    LY = 0xff44,
     LYC = 0xff45,
     DMA = 0xff46,
     BGP = 0xff47,
@@ -157,6 +158,7 @@ impl Default for Mem {
         val.high_ram[RegAddr::LCDC as usize - HIGH_RAM_BASE as usize] = 0x91;
         val.high_ram[RegAddr::SCY as usize - HIGH_RAM_BASE as usize] = 0x00;
         val.high_ram[RegAddr::SCX as usize - HIGH_RAM_BASE as usize] = 0x00;
+        val.high_ram[RegAddr::LY as usize - HIGH_RAM_BASE as usize] = 0x00;
         val.high_ram[RegAddr::LYC as usize - HIGH_RAM_BASE as usize] = 0x00;
         val.high_ram[RegAddr::BGP as usize - HIGH_RAM_BASE as usize] = 0xfc;
         val.high_ram[RegAddr::OBP0 as usize - HIGH_RAM_BASE as usize] = 0xff;
