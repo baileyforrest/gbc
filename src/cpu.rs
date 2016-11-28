@@ -1140,7 +1140,7 @@ impl<'a> NextStateGen<'a> {
                         size = 1;
                         cycles = 32;
 
-                        let pc = self.cpu.regs.pc;
+                        let pc = self.cpu.regs.pc.overflowing_add(size).0;
                         self.push(pc);
                         self.ns.regs.pc = y as u16 * 8;
                     }
