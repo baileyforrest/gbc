@@ -848,7 +848,6 @@ impl<'a> NextStateGen<'a> {
                                 let sp = self.cpu.regs.sp;
                                 let to_add = (self.read_pc_val(1) as i8) as i32;
                                 let new_sp_i32 = sp as i32 + to_add;
-                                let overflow = new_sp_i32 & 0x100 != 0;
                                 let new_sp = new_sp_i32 as u16;
 
                                 if y == 5 {
@@ -868,7 +867,7 @@ impl<'a> NextStateGen<'a> {
                                 self.ns.regs.set_flag(FlagType::H, hc);
 
                                 let c = new_sp & 0xff < sp & 0xff;
-                                self.ns.regs.set_flag(FlagType::C, overflow);
+                                self.ns.regs.set_flag(FlagType::C, c);
                             }
                             6 => {
                                 // LDH A,(a8)
