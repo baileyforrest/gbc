@@ -235,8 +235,8 @@ impl Lcd {
                 if idx & 0x80 == 0 {
                     BASE_ADDR + idx as u16
                 } else {
-                    let abs = !(idx as u16) + 1; // 2's complement
-                    BASE_ADDR - abs
+                    let abs = !(idx) + 1; // 2's complement
+                    BASE_ADDR - abs as u16
                 }
             }
         }
@@ -263,8 +263,8 @@ impl Lcd {
         let tile_byte_upper = mem.read(tile_base_addr + tile_y as u16 * 2);
         let tile_byte_lower = mem.read(tile_base_addr + tile_y as u16 * 2 + 1);
 
-        let upper_bit = tile_byte_upper >> (7 - tile_x);
-        let lower_bit = tile_byte_lower >> (7 - tile_x);
+        let upper_bit = (tile_byte_upper >> (7 - tile_x)) & 0x1;
+        let lower_bit = (tile_byte_lower >> (7 - tile_x)) & 0x1;
         let color_idx = upper_bit << 1 | lower_bit;
 
         color_idx

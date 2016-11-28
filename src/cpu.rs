@@ -575,8 +575,15 @@ impl<'a> NextStateGen<'a> {
                             cycles = 8;
                             // ADD HL, rp[p]
                             let add_val = self.cpu.regs.get16(rp_idx_to_r16(p));
-                            self.ns.regs.hl += add_val;
+                            let (new_val, overflow) = self.cpu.regs.hl.overflowing_add(add_val);
+
+                            self.ns.regs.hl = new_val;
                             self.ns.regs.set_flag(FlagType::N, false);
+
+                            // Half carry if bit 12 changed.
+                            let hc = self.cpu.regs.hl & (1 << 12) != new_val & (1 << 12);
+                            self.ns.regs.set_flag(FlagType::H, hc);
+                            self.ns.regs.set_flag(FlagType::C, overflow);
                         }
                     }
                     2 => {
@@ -835,8 +842,10 @@ impl<'a> NextStateGen<'a> {
                             }
                             5 | 7 => {
                                 size = 2;
-                                let to_add: u16 = self.read_pc_val(1) as u16;
-                                let (new_sp, overflow) = self.cpu.regs.sp.overflowing_add(to_add);
+                                let to_add = (self.read_pc_val(1) as i8) as i32;
+                                let new_sp_i32 = self.cpu.regs.sp as i32 + to_add;
+                                let overflow = new_sp_i32 & 0x100 != 0;
+                                let new_sp = new_sp_i32 as u16;
 
                                 if y == 5 {
                                     // ADD SP,n

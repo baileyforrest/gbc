@@ -26,7 +26,6 @@ struct Cartridge {
 
     mbc_type: MbcType,
     cur_rom_bank: u8,
-    cur_ram_bank: u8,
     cur_rom_or_ram_bank: u8,
     ext_ram_enabled: bool,
     rom_bank_mode: bool,
@@ -34,6 +33,8 @@ struct Cartridge {
 
 pub enum RegAddr {
     P1 = 0xff00,
+    SB = 0xff01,
+    SC = 0xff02,
     DIV = 0xff04,
     TIMA = 0xff05,
     TMA = 0xff06,
@@ -68,6 +69,7 @@ pub enum RegAddr {
     OBP1 = 0xff49,
     WY = 0xff4a,
     WX = 0xff4b,
+    SVBK = 0xff70,
     IE = 0xffff,
 }
 
@@ -117,7 +119,6 @@ impl Default for Cartridge {
             ext_ram: vec![],
             mbc_type: MbcType::MbcNone,
             cur_rom_bank: 0,
-            cur_ram_bank: 0,
             cur_rom_or_ram_bank: 0,
             ext_ram_enabled: false,
             rom_bank_mode: true,
@@ -206,7 +207,17 @@ impl Cartridge {
                     _ => self.rom[self.cur_rom_bank as usize][addr as usize - 0x4000],
                 }
             }
-            0xa000...0xbfff => self.ext_ram[self.cur_ram_bank as usize][addr as usize - 0xa000],
+            0xa000...0xbfff => {
+                let bank_num = if self.rom_bank_mode {
+                    0
+                } else {
+                    self.cur_rom_or_ram_bank
+                } as usize;
+                if bank_num >= self.ext_ram.len() {
+                    return 0xff;
+                }
+                self.ext_ram[bank_num][addr as usize - 0xa000]
+            }
             _ => panic!("Invalid read to cartridge"),
         }
     }
@@ -227,7 +238,15 @@ impl Cartridge {
                 self.rom_bank_mode = val & 0x1 == 0;
             }
             0xa000...0xbfff => {
-                self.ext_ram[self.cur_ram_bank as usize][addr as usize - 0xa000] = val
+                let bank_num = if self.rom_bank_mode {
+                    0
+                } else {
+                    self.cur_rom_or_ram_bank
+                } as usize;
+                if bank_num >= self.ext_ram.len() {
+                    return;
+                }
+                self.ext_ram[bank_num][addr as usize - 0xa000] = val;
             }
             _ => panic!("Invalid write to cartridge"),
         }
@@ -310,8 +329,9 @@ impl Mem {
             0xc000...0xcfff => self.work_ram[0][addr as usize - 0xc000],
             0xd000...0xdfff => {
                 // FF70 - SVBK - CGB Mode Only - WRAM Bank
-                let svbk = self.read(0xff70);
-                let idx = svbk & 0x7;
+                let svbk = self.read_reg(RegAddr::SVBK);
+                let masked = svbk & 0x7;
+                let idx = if masked == 0 { 1 } else { masked };
                 self.work_ram[idx as usize][addr as usize - 0xd000]
             }
             0xe000...0xfdff => self.read(addr - 0x2000),
@@ -335,8 +355,9 @@ impl Mem {
             0xc000...0xcfff => self.work_ram[0][addr as usize - 0xc000] = val,
             0xd000...0xdfff => {
                 // FF70 - SVBK - CGB Mode Only - WRAM Bank
-                let svbk = self.read(0xff70);
-                let idx = svbk & 0x7;
+                let svbk = self.read_reg(RegAddr::SVBK);
+                let masked = svbk & 0x7;
+                let idx = if masked == 0 { 1 } else { masked };
                 self.work_ram[idx as usize][addr as usize - 0xd000] = val;
             }
             0xe000...0xfdff => self.write(addr - 0x2000, val),
@@ -350,6 +371,15 @@ impl Mem {
                     let mask = 0x30;
 
                     write_val = val & mask | cur_val & !mask;
+                } else if addr == RegAddr::SVBK as u16 {
+                    write_val &= 0x7;
+                }
+
+
+                // TODO: testingremove
+                if addr == RegAddr::SC as u16 {
+                    let sb = self.read(RegAddr::SB as u16) as char;
+                    println!("Console output: {}", sb);
                 }
 
                 self.high_ram[addr as usize - 0xfe00] = write_val;
