@@ -571,17 +571,18 @@ impl<'a> NextStateGen<'a> {
                             let dst_reg = rp_idx_to_r16(p);
                             self.ns.regs.set16(dst_reg, val);
                         } else {
+                            // ADD HL, rp[p]
                             size = 1;
                             cycles = 8;
-                            // ADD HL, rp[p]
+
+                            let hl = self.cpu.regs.hl;
                             let add_val = self.cpu.regs.get16(rp_idx_to_r16(p));
-                            let (new_val, overflow) = self.cpu.regs.hl.overflowing_add(add_val);
+                            let (new_val, overflow) = hl.overflowing_add(add_val);
 
                             self.ns.regs.hl = new_val;
                             self.ns.regs.set_flag(FlagType::N, false);
 
-                            // Half carry if bit 12 changed.
-                            let hc = self.cpu.regs.hl & (1 << 12) != new_val & (1 << 12);
+                            let hc = new_val & 0xfff < hl & 0xfff;
                             self.ns.regs.set_flag(FlagType::H, hc);
                             self.ns.regs.set_flag(FlagType::C, overflow);
                         }
@@ -678,21 +679,22 @@ impl<'a> NextStateGen<'a> {
 
                         let val = self.get_reg8(reg);
                         let new_val;
+                        let hc;
                         if z == 4 {
                             // INC r[y]
                             new_val = val.overflowing_add(1).0;
                             self.ns.regs.set_flag(FlagType::N, false);
+                            hc = new_val & 0xf < val & 0xf;
                         } else {
                             // DEC r[y]
                             new_val = val.overflowing_sub(1).0;
                             self.ns.regs.set_flag(FlagType::N, true);
+                            hc = new_val & 0xf > val & 0xf;
                         }
 
                         self.set_reg8(reg, new_val);
                         self.ns.regs.set_flag(FlagType::Z, new_val == 0);
 
-                        // Half carry occured if 4th bit changed.
-                        let hc = val & (1 << 4) != new_val & (1 << 4);
                         self.ns.regs.set_flag(FlagType::H, hc);
                     }
                     6 => {
@@ -842,8 +844,10 @@ impl<'a> NextStateGen<'a> {
                             }
                             5 | 7 => {
                                 size = 2;
+
+                                let sp = self.cpu.regs.sp;
                                 let to_add = (self.read_pc_val(1) as i8) as i32;
-                                let new_sp_i32 = self.cpu.regs.sp as i32 + to_add;
+                                let new_sp_i32 = sp as i32 + to_add;
                                 let overflow = new_sp_i32 & 0x100 != 0;
                                 let new_sp = new_sp_i32 as u16;
 
@@ -860,9 +864,10 @@ impl<'a> NextStateGen<'a> {
                                 self.ns.regs.set_flag(FlagType::Z, false);
                                 self.ns.regs.set_flag(FlagType::N, false);
 
-                                // Set half carry if the 12th bit changed.
-                                let hc = self.cpu.regs.sp & (1 << 12) != new_sp & (1 << 12);
+                                let hc = new_sp & 0xf < sp & 0xf;
                                 self.ns.regs.set_flag(FlagType::H, hc);
+
+                                let c = new_sp & 0xff < sp & 0xff;
                                 self.ns.regs.set_flag(FlagType::C, overflow);
                             }
                             6 => {
