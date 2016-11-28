@@ -416,14 +416,14 @@ impl<'a> NextStateGen<'a> {
             }
             1 => {
                 // ADC A,
+                let c_flag_u8 = self.cpu.regs.get_flag(FlagType::C) as u8;
                 let (val1, o1) = a_val.overflowing_add(other_val);
-                let (new_a_val, o2) =
-                    val1.overflowing_add(self.cpu.regs.get_flag(FlagType::C) as u8);
+                let (new_a_val, o2) = val1.overflowing_add(c_flag_u8);
                 self.set_reg8(Reg8::A, new_a_val);
                 self.ns.regs.set_flag(FlagType::Z, new_a_val == 0);
                 self.ns.regs.set_flag(FlagType::N, false);
 
-                let hc = new_a_val & 0xf < a_val & 0xf;
+                let hc = (a_val & 0xf) + (other_val & 0xf) + c_flag_u8 > 0xf;
                 self.ns.regs.set_flag(FlagType::H, hc);
                 self.ns.regs.set_flag(FlagType::C, o1 || o2);
             }
@@ -440,15 +440,18 @@ impl<'a> NextStateGen<'a> {
             }
             3 => {
                 // SBC A,
-                let with_carry = a_val as u16 | (self.cpu.regs.get_flag(FlagType::C) as u16) << 8;
-                let (new_a_val, overflow) = with_carry.overflowing_sub(other_val as u16);
-                self.set_reg8(Reg8::A, new_a_val as u8);
+                let c_flag = self.cpu.regs.get_flag(FlagType::C);
+                let other_with_carry = other_val as u16 + c_flag as u16;
+                let new_a_val = a_val.overflowing_sub(other_with_carry as u8).0;
+                self.set_reg8(Reg8::A, new_a_val);
                 self.ns.regs.set_flag(FlagType::Z, new_a_val == 0);
                 self.ns.regs.set_flag(FlagType::N, true);
 
-                let hc = with_carry & 0xff < other_val as u16 & 0xff;
+                let hc = (a_val & 0xf < other_val & 0xf) ||
+                         (a_val & 0xf < other_with_carry as u8 & 0xf) ||
+                         (a_val & 0xf == other_val & 0xf && a_val & 0xf == 0xf && c_flag);
                 self.ns.regs.set_flag(FlagType::H, hc);
-                self.ns.regs.set_flag(FlagType::C, overflow);
+                self.ns.regs.set_flag(FlagType::C, (a_val as u16) < other_with_carry);
             }
             4 => {
                 // AND
