@@ -26,9 +26,8 @@ impl Timer {
         self.timer_counter = self.timer_counter.overflowing_add(1).0;
 
         let tac = mem.read_reg(mem::RegAddr::TAC);
-        let enabled = tac & 0x4 != 0;
-
-        if !enabled {
+        if tac & 0x4 == 0 {
+            // Check if enabled
             return;
         }
 

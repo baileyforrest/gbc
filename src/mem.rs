@@ -39,7 +39,7 @@ pub enum RegAddr {
     TIMA = 0xff05,
     TMA = 0xff06,
     TAC = 0xff07,
-    IF = 0xff0f,
+    IF = 0xff0f, // TODO: always set upper 3 bits to 0
     NR10 = 0xff10,
     NR11 = 0xff11,
     NR12 = 0xff12,
