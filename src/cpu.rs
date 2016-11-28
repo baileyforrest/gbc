@@ -350,50 +350,44 @@ impl<'a> NextStateGen<'a> {
         self.ns.regs.pc = addr;
     }
 
-    fn rlc(&mut self, r: Reg8) {
+    fn rlc(&mut self, r: Reg8, z_off: bool) {
         let val = self.get_reg8(r);
         let new_val = val << 1 | val >> 7;
 
-        self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+        self.ns.regs.set_flag(FlagType::Z, !z_off && new_val == 0);
         self.ns.regs.set_flag(FlagType::N, false);
         self.ns.regs.set_flag(FlagType::H, false);
-
-        let c = val & (1 << 7) != 0;
-        self.ns.regs.set_flag(FlagType::C, c);
+        self.ns.regs.set_flag(FlagType::C, val & 0x80 != 0);
         self.set_reg8(r, new_val);
     }
 
-    fn rrc(&mut self, r: Reg8) {
+    fn rrc(&mut self, r: Reg8, z_off: bool) {
         let val = self.get_reg8(r);
         let new_val = val >> 1 | val << 7;
 
-        self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+        self.ns.regs.set_flag(FlagType::Z, !z_off && new_val == 0);
         self.ns.regs.set_flag(FlagType::N, false);
         self.ns.regs.set_flag(FlagType::H, false);
-
-        let c = val & 0x1 != 0;
-        self.ns.regs.set_flag(FlagType::C, c);
+        self.ns.regs.set_flag(FlagType::C, val & 0x1 != 0);
         self.set_reg8(r, new_val);
     }
 
-    fn rl(&mut self, r: Reg8) {
+    fn rl(&mut self, r: Reg8, z_off: bool) {
         let val = self.get_reg8(r);
         let new_val = val << 1 | self.cpu.regs.get_flag(FlagType::C) as u8;
 
-        self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+        self.ns.regs.set_flag(FlagType::Z, !z_off && new_val == 0);
         self.ns.regs.set_flag(FlagType::N, false);
         self.ns.regs.set_flag(FlagType::H, false);
-
-        let c = val & (1 << 7) != 0;
-        self.ns.regs.set_flag(FlagType::C, c);
+        self.ns.regs.set_flag(FlagType::C, val & 0x80 != 0);
         self.set_reg8(r, new_val);
     }
 
-    fn rr(&mut self, r: Reg8) {
+    fn rr(&mut self, r: Reg8, z_off: bool) {
         let val = self.get_reg8(r);
         let new_val = val >> 1 | (self.cpu.regs.get_flag(FlagType::C) as u8) << 7;
 
-        self.ns.regs.set_flag(FlagType::Z, new_val == 0);
+        self.ns.regs.set_flag(FlagType::Z, !z_off && new_val == 0);
         self.ns.regs.set_flag(FlagType::N, false);
         self.ns.regs.set_flag(FlagType::H, false);
         self.ns.regs.set_flag(FlagType::C, val & 0x1 != 0);
@@ -712,22 +706,10 @@ impl<'a> NextStateGen<'a> {
                         size = 1;
                         cycles = 4;
                         match y {
-                            0 => {
-                                // RLCA
-                                self.rlc(Reg8::A);
-                            }
-                            1 => {
-                                // RRCA
-                                self.rrc(Reg8::A);
-                            }
-                            2 => {
-                                // RLA
-                                self.rl(Reg8::A);
-                            }
-                            3 => {
-                                // RRA
-                                self.rr(Reg8::A);
-                            }
+                            0 => self.rlc(Reg8::A, true), // RLCA
+                            1 => self.rrc(Reg8::A, true), // RRCA
+                            2 => self.rl(Reg8::A, true), // RLA
+                            3 => self.rr(Reg8::A, true), // RRA
                             4 => {
                                 // DAA
                                 // See http://www.z80.info/z80syntx.htm#DAA
@@ -1002,22 +984,10 @@ impl<'a> NextStateGen<'a> {
                                         cycles = if reg == Reg8::HLI { 16 } else { 8 };
 
                                         match y {
-                                            0 => {
-                                                // RLC
-                                                self.rlc(reg);
-                                            }
-                                            1 => {
-                                                // RRC
-                                                self.rrc(reg);
-                                            }
-                                            2 => {
-                                                // RL
-                                                self.rl(reg);
-                                            }
-                                            3 => {
-                                                // RR
-                                                self.rr(reg);
-                                            }
+                                            0 => self.rlc(reg, false), // RLC
+                                            1 => self.rrc(reg, false), // RRC
+                                            2 => self.rl(reg, false), // RL
+                                            3 => self.rr(reg, false), // RR
                                             4 => {
                                                 // SLA
                                                 let val = self.get_reg8(reg);
