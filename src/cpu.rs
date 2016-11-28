@@ -833,6 +833,8 @@ impl<'a> NextStateGen<'a> {
                                 } else {
                                     cycles = 8;
                                 }
+
+                                // TODO: Should be under the 'if'
                                 self.ret();
                             }
                             4 => {
@@ -1026,7 +1028,7 @@ impl<'a> NextStateGen<'a> {
                                                 self.ns.regs.set_flag(FlagType::H, false);
                                                 self.ns
                                                     .regs
-                                                    .set_flag(FlagType::C, new_val & (1 << 7) != 0);
+                                                    .set_flag(FlagType::C, val & 0x80 != 0);
                                             }
                                             5 | 7 => {
                                                 // 5. SRA
@@ -1034,7 +1036,7 @@ impl<'a> NextStateGen<'a> {
                                                 let val = self.get_reg8(reg);
                                                 let mut new_val = val >> 1;
                                                 if y == 5 {
-                                                    new_val |= 0x80;
+                                                    new_val |= val & 0x80;
                                                 }
                                                 self.set_reg8(reg, new_val);
                                                 self.ns.regs.set_flag(FlagType::Z, new_val == 0);
