@@ -69,6 +69,7 @@ pub enum RegAddr {
     OBP1 = 0xff49,
     WY = 0xff4a,
     WX = 0xff4b,
+    KEY1 = 0xff4d,
     SVBK = 0xff70,
     IE = 0xffff,
 }

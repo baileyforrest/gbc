@@ -543,7 +543,19 @@ impl<'a> NextStateGen<'a> {
                                 // STOP
                                 size = 2;
                                 cycles = 4;
-                                self.ns.regs.stopped = true;
+
+                                let key1 = self.mem.read_reg(mem::RegAddr::KEY1);
+
+                                // Do speed switch if bit 0 is set.
+                                if key1 & 0x1 != 0 {
+                                    // TODO: Do speed switch
+
+                                    // Unset bit 0
+                                    let mem_write = (mem::RegAddr::KEY1 as u16, key1 & 0xfe);
+                                    self.ns.mem_writes.push(mem_write);
+                                } else {
+                                    self.ns.regs.stopped = true;
+                                }
                             }
                             3...7 => {
                                 // y == 3: JR d
